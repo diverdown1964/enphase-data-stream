@@ -1,0 +1,14 @@
+# HTTP client for API requests
+requests>=2.31.0
+
+# Azure Event Hubs SDK for Microsoft Fabric Eventstream
+azure-eventhub>=5.11.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Scheduling for periodic polling
+schedule>=1.2.0
+
+# Logging
+python-json-logger>=2.0.7
