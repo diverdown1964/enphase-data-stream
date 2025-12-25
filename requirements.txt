@@ -1,14 +1,21 @@
+# Do not include azure-functions-worker in this file
+# The Python Worker is managed by the Azure Functions platform
+
+# Azure Functions
+azure-functions
+
 # HTTP client for API requests
 requests>=2.31.0
 
 # Azure Event Hubs SDK for Microsoft Fabric Eventstream
 azure-eventhub>=5.11.0
 
-# Environment variable management
+# Environment variable management (for local testing)
 python-dotenv>=1.0.0
 
-# Scheduling for periodic polling
-schedule>=1.2.0
-
-# Logging
+# Logging (for local testing)
 python-json-logger>=2.0.7
+
+# Application Insights instrumentation
+opencensus-ext-azure>=1.1.13
+opencensus-ext-requests>=0.8.0

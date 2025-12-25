@@ -8,6 +8,7 @@ import time
 import logging
 import signal
 from datetime import datetime
+from typing import Dict
 from dotenv import load_dotenv
 from pythonjsonlogger import jsonlogger
 
@@ -69,69 +70,103 @@ class EnphaseDataStreamer:
         )
         
         # Polling interval (in seconds)
-        self.poll_interval = int(os.getenv("POLL_INTERVAL", 300))
-        
-        # Track sent intervals to avoid duplicates (store timestamps)
-        self.sent_intervals = set()
+        self.poll_interval = int(os.getenv("POLL_INTERVAL", 14400))
         
         logger.info("Enphase Data Streamer initialized")
-        logger.info(f"Polling interval: {self.poll_interval} seconds")
+        logger.info(f"Polling interval: {self.poll_interval} seconds ({self.poll_interval/3600:.1f} hours)")
+    
+    def _send_intervals(self, telemetry_data: Dict, telemetry_type: str) -> int:
+        """
+        Send all intervals for a specific telemetry type
+        Deduplication is handled downstream in Fabric/KQL
+        
+        Args:
+            telemetry_data: Full telemetry response from API
+            telemetry_type: Type of telemetry (production, consumption, battery, import, export)
+            
+        Returns:
+            Number of intervals sent
+        """
+        all_intervals = telemetry_data.get('intervals', [])
+        
+        if not all_intervals:
+            logger.info(f"No {telemetry_type} intervals to send")
+            return 0
+        
+        # Log summary
+        logger.info(f"Sending {len(all_intervals)} {telemetry_type} intervals")
+        
+        # Send each interval individually to Eventstream
+        sent_count = 0
+        for interval in all_intervals:
+            # Create event with interval data plus metadata
+            event = {
+                'system_id': telemetry_data.get('system_id'),
+                'telemetry_type': telemetry_type,
+                'granularity': telemetry_data.get('granularity'),
+                'interval': interval,
+                'retrieved_at': telemetry_data.get('retrieved_at')
+            }
+            
+            success = self.eventstream_sender.send_event(event)
+            
+            if success:
+                sent_count += 1
+            else:
+                logger.error(f"Failed to send {telemetry_type} interval at {interval.get('end_at')}")
+        
+        logger.info(f"Successfully sent {sent_count}/{len(all_intervals)} {telemetry_type} intervals")
+        
+        return sent_count
     
     def poll_and_send(self):
-        """Poll Enphase API and send only new intervals to Eventstream"""
+        """Poll Enphase API for all telemetry types and send only new intervals to Eventstream"""
         try:
-            logger.info("Polling Enphase API...")
+            logger.info("Polling Enphase API for all telemetry types...")
             
-            # Get production data (v4 telemetry with intervals)
-            production_data = self.enphase_client.get_production_data()
+            total_sent = 0
             
-            # Filter out intervals we've already sent
-            all_intervals = production_data.get('intervals', [])
-            new_intervals = [
-                interval for interval in all_intervals
-                if interval.get('end_at') not in self.sent_intervals
-            ]
+            # 1. Production telemetry
+            try:
+                production_data = self.enphase_client.get_production_data()
+                sent = self._send_intervals(production_data, 'production')
+                total_sent += sent
+            except Exception as e:
+                logger.error(f"Error getting production data: {e}")
             
-            if not new_intervals:
-                logger.info("No new intervals to send (all data already sent)")
-                return
+            # 2. Consumption telemetry
+            try:
+                consumption_data = self.enphase_client.get_consumption_data()
+                sent = self._send_intervals(consumption_data, 'consumption')
+                total_sent += sent
+            except Exception as e:
+                logger.error(f"Error getting consumption data: {e}")
             
-            # Log summary
-            logger.info(f"Found {len(new_intervals)} new intervals out of {len(all_intervals)} total")
-            if new_intervals:
-                latest_interval = new_intervals[-1]
-                wh_del = latest_interval.get('wh_del', 0)
-                logger.info(f"Latest production: {wh_del} Wh delivered")
+            # 3. Battery telemetry
+            try:
+                battery_data = self.enphase_client.get_battery_data()
+                sent = self._send_intervals(battery_data, 'battery')
+                total_sent += sent
+            except Exception as e:
+                logger.error(f"Error getting battery data: {e}")
             
-            # Send each new interval individually to Eventstream
-            sent_count = 0
-            for interval in new_intervals:
-                # Create event with interval data plus metadata
-                event = {
-                    'system_id': production_data.get('system_id'),
-                    'granularity': production_data.get('granularity'),
-                    'interval': interval,
-                    'retrieved_at': production_data.get('retrieved_at')
-                }
-                
-                success = self.eventstream_sender.send_event(event)
-                
-                if success:
-                    # Mark this interval as sent
-                    self.sent_intervals.add(interval.get('end_at'))
-                    sent_count += 1
-                else:
-                    logger.error(f"Failed to send interval at {interval.get('end_at')}")
+            # 4. Grid import telemetry
+            try:
+                import_data = self.enphase_client.get_import_data()
+                sent = self._send_intervals(import_data, 'import')
+                total_sent += sent
+            except Exception as e:
+                logger.error(f"Error getting import data: {e}")
             
-            logger.info(f"Successfully sent {sent_count}/{len(new_intervals)} new intervals to Eventstream")
+            # 5. Grid export telemetry
+            try:
+                export_data = self.enphase_client.get_export_data()
+                sent = self._send_intervals(export_data, 'export')
+                total_sent += sent
+            except Exception as e:
+                logger.error(f"Error getting export data: {e}")
             
-            # Clean up old timestamps (keep last 24 hours worth)
-            # This prevents the set from growing indefinitely
-            if len(self.sent_intervals) > 200:  # ~2 days of 15-min intervals
-                current_time = max(interval.get('end_at') for interval in all_intervals)
-                cutoff_time = current_time - (24 * 3600)  # 24 hours ago
-                self.sent_intervals = {ts for ts in self.sent_intervals if ts > cutoff_time}
-                logger.info(f"Cleaned up old interval tracking (kept {len(self.sent_intervals)} recent timestamps)")
+            logger.info(f"Poll complete: sent {total_sent} total events to Eventstream")
                 
         except Exception as e:
             logger.error(f"Error during poll and send: {e}", exc_info=True)
