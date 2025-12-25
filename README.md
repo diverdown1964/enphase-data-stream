@@ -1,84 +1,103 @@
 # Enphase to Microsoft Fabric Eventstream
 
-A Python application that polls the Enphase Energy API for solar production data and streams it to Microsoft Fabric Eventstream in real-time.
+An Azure Functions application that polls the Enphase Energy API for solar production data and streams it to Microsoft Fabric Eventstream via Azure Event Hubs.
 
 ## ✅ Current Status
 
-The application is **ready to stream data** once you configure Microsoft Fabric Eventstream credentials.
+The application is **deployed and running** as an Azure Function App, streaming solar telemetry data to Microsoft Fabric.
 
 **What's Working:**
+- ✅ Azure Functions V2 with timer trigger (every 4 hours)
 - ✅ OAuth 2.0 authentication with Enphase API v4
 - ✅ Token persistence with automatic refresh
-- ✅ Production telemetry data retrieval (15-minute intervals)
-- ✅ System discovery and validation (System: 5706934 "Whites Pv")
-- ✅ V4 API integration with proper authentication headers
+- ✅ Production, consumption, battery, import, and export telemetry retrieval
+- ✅ Real-time streaming to Microsoft Fabric Eventstream
+- ✅ Application Insights integration for monitoring and distributed tracing
+- ✅ Data stored in Fabric Eventhouse (KQL database)
 
-**Last Test Results:**
-- System ID: 5706934
-- Total Devices: 1
-- Latest Production: 447 Wh delivered
-- Retrieved 41 intervals of telemetry data
+**Telemetry Types Collected:**
+- Production meter data
+- Consumption meter data
+- Battery telemetry
+- Energy import telemetry
+- Energy export telemetry
 
-**⚠️ To Complete Setup:**
-You need to add your Microsoft Fabric Eventstream credentials to the `.env` file (see instructions below).
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│  Enphase API    │────▶│  Azure Function  │────▶│  Fabric Eventstream │
+│  (Solar Data)   │     │  (Timer Trigger) │     │  (Event Hub)        │
+└─────────────────┘     └──────────────────┘     └─────────────────────┘
+                                │                          │
+                                ▼                          ▼
+                        ┌──────────────────┐     ┌─────────────────────┐
+                        │  App Insights    │     │  Fabric Eventhouse  │
+                        │  (Monitoring)    │     │  (KQL Database)     │
+                        └──────────────────┘     └─────────────────────┘
+```
 
 ## Features
 
-- 🔄 Continuous polling of Enphase Energy API
+- ⏰ Timer-triggered Azure Function (runs every 4 hours)
+- 🔄 Polls multiple Enphase telemetry endpoints
 - ☁️ Streams data to Microsoft Fabric Eventstream via Azure Event Hubs
-- 🔐 OAuth 2.0 authentication with Enphase API
-- 📊 JSON structured logging
-- ⚡ Configurable polling intervals
-- 🛡️ Graceful shutdown handling
+- 🔐 OAuth 2.0 authentication with automatic token refresh
+- 📊 Application Insights integration with OpenCensus tracing
+- 📈 Data stored in Fabric Eventhouse for KQL analysis
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.11 or higher
+- Azure subscription with Function App
 - Enphase Energy account with API access
-- Microsoft Fabric workspace with Eventstream configured
+- Microsoft Fabric workspace with Eventstream and Eventhouse
 
-## Enphase API Setup
+## Project Structure
 
-1. **Get Enphase API Credentials:**
-   - Go to [Enphase Developer Portal](https://developer-v4.enphase.com/)
-   - Create an account or sign in
-   - Create a new application to get your Client ID and Client Secret
-   - Note your System ID from your Enphase monitoring portal
+```
+enphase-data-stream/
+├── function_app.py             # Azure Functions entry point (timer trigger)
+├── host.json                   # Azure Functions host configuration
+├── local.settings.json         # Local development settings (not in git)
+├── requirements.txt            # Python dependencies
+├── src/
+│   ├── main.py                 # Standalone application entry point
+│   ├── enphase_client.py       # Enphase API client
+│   └── eventstream_sender.py   # Microsoft Fabric Eventstream sender
+├── check_all_telemetry.py      # Utility: Check all telemetry endpoints
+├── check_latest_snapshot.py    # Utility: Check latest data snapshot
+├── QUICKSTART.md               # Quick start guide
+└── README.md                   # This file
+```
 
-2. **API Access:**
-   - You'll need to register for API access through Enphase
-   - Ensure you have the appropriate API tier for your polling frequency
+## Configuration
 
-## Microsoft Fabric Eventstream Setup
+### Azure Function App Settings
 
-1. **Create an Eventstream:**
-   - In your Microsoft Fabric workspace, create a new Eventstream
-   - Configure the Eventstream source as "Custom App"
-   - Copy the Event Hub connection string and Event Hub name
+| Setting | Description | Required |
+|---------|-------------|----------|
+| `ENPHASE_API_KEY` | Enphase API key | Yes |
+| `ENPHASE_CLIENT_ID` | OAuth client ID | Yes |
+| `ENPHASE_CLIENT_SECRET` | OAuth client secret | Yes |
+| `ENPHASE_SYSTEM_ID` | Your Enphase system ID | Yes |
+| `ENPHASE_REFRESH_TOKEN` | OAuth refresh token | Yes |
+| `EVENTHUB_CONNECTION_STRING` | Azure Event Hub connection string | Yes |
+| `EVENTHUB_NAME` | Event Hub/Eventstream name | Yes |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights connection | Yes |
 
-2. **Connection String:**
-   - The connection string should look like:
-     ```
-     Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<key-name>;SharedAccessKey=<key>;EntityPath=<eventhub-name>
-     ```
-
-## Installation
+### Local Development
 
 1. **Clone the repository:**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/diverdown1964/enphase-data-stream.git
    cd enphase-data-stream
    ```
 
 2. **Create a virtual environment:**
    ```bash
    python -m venv venv
-   
-   # Windows
-   venv\Scripts\activate
-   
-   # Linux/Mac
-   source venv/bin/activate
+   venv\Scripts\activate  # Windows
    ```
 
 3. **Install dependencies:**
@@ -86,191 +105,98 @@ You need to add your Microsoft Fabric Eventstream credentials to the `.env` file
    pip install -r requirements.txt
    ```
 
-4. **Configure environment variables:**
+4. **Configure local.settings.json:**
+   ```json
+   {
+     "IsEncrypted": false,
+     "Values": {
+       "FUNCTIONS_WORKER_RUNTIME": "python",
+       "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+       "ENPHASE_API_KEY": "your_api_key",
+       "ENPHASE_CLIENT_ID": "your_client_id",
+       "ENPHASE_CLIENT_SECRET": "your_client_secret",
+       "ENPHASE_SYSTEM_ID": "your_system_id",
+       "ENPHASE_REFRESH_TOKEN": "your_refresh_token",
+       "EVENTHUB_CONNECTION_STRING": "your_connection_string",
+       "EVENTHUB_NAME": "your_eventhub_name",
+       "APPLICATIONINSIGHTS_CONNECTION_STRING": "your_app_insights_connection"
+     }
+   }
+   ```
+
+5. **Run locally:**
    ```bash
-   # Copy the example file
-   cp .env.example .env
-   
-   # Edit .env with your credentials
+   func start
    ```
 
-5. **Edit the `.env` file with your credentials:**
-   ```env
-   # Enphase API Configuration
-   ENPHASE_API_KEY=your_api_key_here
-   ENPHASE_CLIENT_ID=your_client_id_here
-   ENPHASE_CLIENT_SECRET=your_client_secret_here
-   ENPHASE_SYSTEM_ID=your_system_id_here
+## Deployment
 
-   # Microsoft Fabric Eventstream Configuration
-   EVENTHUB_CONNECTION_STRING=your_eventhub_connection_string_here
-   EVENTHUB_NAME=your_eventstream_name_here
-
-   # Polling Configuration (in seconds)
-   POLL_INTERVAL=300
-   ```
-
-## Usage
-
-### Run the application:
+Deploy to Azure using VS Code Azure Functions extension or Azure CLI:
 
 ```bash
-python src/main.py
-```
-
-### Run with custom poll interval:
-
-```bash
-# Set in .env file or override with environment variable
-POLL_INTERVAL=60 python src/main.py
-```
-
-### Graceful shutdown:
-
-Press `Ctrl+C` or send a SIGTERM signal. The application will complete the current operation and close connections gracefully.
-
-## Project Structure
-
-```
-enphase-data-stream/
-├── src/
-│   ├── main.py                 # Main application entry point
-│   ├── enphase_client.py       # Enphase API client
-│   └── eventstream_sender.py   # Microsoft Fabric Eventstream sender
-├── .env.example                # Example environment configuration
-├── .gitignore                  # Git ignore file
-├── requirements.txt            # Python dependencies
-└── README.md                   # This file
+func azure functionapp publish <your-function-app-name>
 ```
 
 ## Data Format
 
-The application sends JSON data to Eventstream with the following structure from Enphase API v4 telemetry:
+The function sends JSON events to Eventstream for each telemetry type:
 
 ```json
 {
+  "telemetry_type": "production",
   "system_id": 5706934,
-  "granularity": "day",
-  "total_devices": 1,
-  "start_at": 1766570400,
-  "end_at": 1766607947,
-  "intervals": [
-    {
-      "end_at": 1766570400,
-      "devices_reporting": 1,
-      "wh_del": 0
-    },
-    {
-      "end_at": 1766571300,
-      "devices_reporting": 1,
-      "wh_del": 115
-    }
-  ],
-  "retrieved_at": "2025-12-24T15:30:00"
+  "retrieved_at": "2025-12-25T11:34:00.647998Z",
+  "end_at": 1766657700,
+  "devices_reporting": 1,
+  "wh_del": 447
 }
 ```
 
-**Fields:**
-- `system_id`: Your Enphase system identifier
-- `granularity`: Time interval granularity (e.g., "day" for 15-minute intervals)
-- `total_devices`: Number of production meters reporting
-- `start_at`: Unix timestamp of data range start
-- `end_at`: Unix timestamp of data range end
-- `intervals`: Array of production readings
-  - `end_at`: Unix timestamp for this interval
-  - `devices_reporting`: Number of devices reporting in this interval
-  - `wh_del`: Watt-hours delivered in this interval
-- `retrieved_at`: ISO timestamp when data was retrieved
+Data is stored in the `HaleJoliSolarRaw` table in Fabric Eventhouse and can be queried using KQL.
 
-## Configuration
+## Querying Data in Fabric
 
-### Environment Variables
+```kql
+// Get latest production readings
+HaleJoliSolarRaw
+| where telemetry_type == "production"
+| order by end_at desc
+| take 10
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `ENPHASE_API_KEY` | Enphase API key | Yes |
-| `ENPHASE_CLIENT_ID` | OAuth client ID | Yes |
-| `ENPHASE_CLIENT_SECRET` | OAuth client secret | Yes |
-| `ENPHASE_SYSTEM_ID` | Your Enphase system ID | Yes |
-| `EVENTHUB_CONNECTION_STRING` | Azure Event Hub connection string | Yes |
-| `EVENTHUB_NAME` | Event Hub/Eventstream name | Yes |
-| `POLL_INTERVAL` | Polling interval in seconds (default: 300) | No |
-
-### Polling Interval Recommendations
-
-- **Real-time monitoring:** 60-300 seconds
-- **Historical analysis:** 600-1800 seconds
-- **API rate limits:** Check Enphase API documentation for your tier
-
-## Logging
-
-The application uses JSON structured logging for easy integration with log aggregation systems. Logs include:
-
-- Timestamp
-- Log level
-- Logger name
-- Message
-- Additional context fields
-
-Example log entry:
-```json
-{
-  "asctime": "2025-12-24 10:30:00,123",
-  "name": "root",
-  "levelname": "INFO",
-  "message": "Successfully retrieved production data for system 123456"
-}
+// Daily production summary
+HaleJoliSolarRaw
+| where telemetry_type == "production"
+| summarize TotalWh = sum(wh_del) by bin(todatetime(end_at * 1s), 1d)
 ```
 
-## Troubleshooting
+## Monitoring
 
-### Authentication Errors
-- Verify your Enphase API credentials are correct
-- Check that your API key has not expired
-- Ensure your client ID and secret are valid
+The function integrates with Application Insights for:
+- Request tracing
+- Dependency tracking (API calls, Event Hub sends)
+- Custom metrics and dimensions
+- Error logging with context
 
-### Connection Errors
-- Verify your Event Hub connection string is correct
-- Check that the Event Hub name matches your Eventstream
-- Ensure your network allows outbound connections to Azure
+## Enphase API Setup
 
-### No Data Being Sent
-- Check the application logs for errors
-- Verify your system ID is correct
-- Ensure your Enphase system is online and producing data
+1. Go to [Enphase Developer Portal](https://developer-v4.enphase.com/)
+2. Create an application to get Client ID and Client Secret
+3. Complete OAuth flow to obtain a refresh token
+4. Note your System ID from your Enphase monitoring portal
 
-## Development
+## Microsoft Fabric Setup
 
-### Running Tests
-```bash
-# Add tests in the future
-pytest
-```
-
-### Code Formatting
-```bash
-# Install development dependencies
-pip install black flake8
-
-# Format code
-black src/
-
-# Check linting
-flake8 src/
-```
+1. Create an Eventstream in your Fabric workspace
+2. Configure a "Custom App" source to get Event Hub credentials
+3. Create an Eventhouse with a KQL database
+4. Connect Eventstream to Eventhouse as a destination
 
 ## License
 
-MIT License - See LICENSE file for details
+MIT License
 
 ## Support
 
-For issues related to:
-- **Enphase API:** Contact Enphase Developer Support
-- **Microsoft Fabric:** Check Microsoft Fabric documentation
+- **Enphase API:** [Enphase Developer Support](https://developer-v4.enphase.com/)
+- **Microsoft Fabric:** [Microsoft Fabric Documentation](https://learn.microsoft.com/fabric/)
 - **This application:** Open an issue in this repository
-
-## Acknowledgments
-
-- Enphase Energy for their API
-- Microsoft for Fabric Eventstream platform
