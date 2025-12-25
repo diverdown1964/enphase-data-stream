@@ -227,6 +227,170 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve production data: {e}")
             raise
     
+    def get_consumption_data(self) -> Dict:
+        """
+        Get consumption data from Enphase system
+        
+        Returns:
+            Dictionary containing consumption telemetry data
+        """
+        token = self._get_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        if self.api_key:
+            headers["key"] = self.api_key
+        
+        endpoint = f"{self.base_url}/systems/{self.system_id}/telemetry/consumption_meter"
+        
+        try:
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            data["retrieved_at"] = datetime.now().isoformat()
+            
+            logger.info(f"Successfully retrieved consumption telemetry for system {self.system_id}")
+            logger.info(f"Retrieved {len(data.get('intervals', []))} intervals")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve consumption data: {e}")
+            raise
+    
+    def get_battery_data(self) -> Dict:
+        """
+        Get battery data from Enphase system
+        
+        Returns:
+            Dictionary containing battery telemetry data
+        """
+        token = self._get_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        if self.api_key:
+            headers["key"] = self.api_key
+        
+        endpoint = f"{self.base_url}/systems/{self.system_id}/telemetry/battery"
+        
+        try:
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            data["retrieved_at"] = datetime.now().isoformat()
+            
+            logger.info(f"Successfully retrieved battery telemetry for system {self.system_id}")
+            logger.info(f"Retrieved {len(data.get('intervals', []))} intervals")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve battery data: {e}")
+            raise
+    
+    def get_import_data(self) -> Dict:
+        """
+        Get grid import data from Enphase system
+        
+        Returns:
+            Dictionary containing energy import telemetry data
+        """
+        token = self._get_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        if self.api_key:
+            headers["key"] = self.api_key
+        
+        endpoint = f"{self.base_url}/systems/{self.system_id}/energy_import_telemetry"
+        
+        try:
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            data["retrieved_at"] = datetime.now().isoformat()
+            
+            logger.info(f"Successfully retrieved import telemetry for system {self.system_id}")
+            logger.info(f"Retrieved {len(data.get('intervals', []))} intervals")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve import data: {e}")
+            raise
+    
+    def get_export_data(self) -> Dict:
+        """
+        Get grid export data from Enphase system
+        
+        Returns:
+            Dictionary containing energy export telemetry data
+        """
+        token = self._get_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        if self.api_key:
+            headers["key"] = self.api_key
+        
+        endpoint = f"{self.base_url}/systems/{self.system_id}/energy_export_telemetry"
+        
+        try:
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            data["retrieved_at"] = datetime.now().isoformat()
+            
+            logger.info(f"Successfully retrieved export telemetry for system {self.system_id}")
+            logger.info(f"Retrieved {len(data.get('intervals', []))} intervals")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve export data: {e}")
+            raise
+    
+    def get_latest_telemetry(self) -> Dict:
+        """
+        Get latest real-time telemetry snapshot
+        
+        Returns:
+            Dictionary containing current power levels and device status
+        """
+        token = self._get_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        if self.api_key:
+            headers["key"] = self.api_key
+        
+        endpoint = f"{self.base_url}/systems/{self.system_id}/latest_telemetry"
+        
+        try:
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            data["retrieved_at"] = datetime.now().isoformat()
+            
+            logger.info(f"Successfully retrieved latest telemetry for system {self.system_id}")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve latest telemetry: {e}")
+            raise
+    
     def get_system_summary(self) -> Dict:
         """
         Get system summary including current status

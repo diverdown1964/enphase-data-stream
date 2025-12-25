@@ -27,7 +27,7 @@ wheels/
 *.egg
 
 # IDE
-.vscode/
+
 .idea/
 *.swp
 *.swo
@@ -36,3 +36,6 @@ wheels/
 # Environment variables
 .env
 .env.local
+local.settings.json
+
+.python_packages
