@@ -155,33 +155,58 @@ class EnphaseClient:
         
         raise Exception("Failed after token refresh")
     
-    def get_production_data(self) -> dict:
+    def get_production_data(self, start_at: int = None, end_at: int = None) -> dict:
         """Get production meter telemetry"""
-        data = self._make_request("telemetry/production_meter", {"granularity": "week"})
+        params = {"granularity": "week"}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("telemetry/production_meter", params)
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
     
-    def get_consumption_data(self) -> dict:
+    def get_consumption_data(self, start_at: int = None, end_at: int = None) -> dict:
         """Get consumption meter telemetry"""
-        data = self._make_request("telemetry/consumption_meter", {"granularity": "week"})
+        params = {"granularity": "week"}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("telemetry/consumption_meter", params)
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
     
-    def get_battery_data(self) -> dict:
+    def get_battery_data(self, start_at: int = None, end_at: int = None) -> dict:
         """Get battery telemetry"""
-        data = self._make_request("telemetry/battery", {"granularity": "week"})
+        params = {"granularity": "week"}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("telemetry/battery", params)
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
     
-    def get_import_data(self) -> dict:
+    def get_import_data(self, start_at: int = None, end_at: int = None) -> dict:
         """Get energy import telemetry"""
-        data = self._make_request("energy_import_telemetry", {"granularity": "week"})
+        params = {"granularity": "week"}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("energy_import_telemetry", params)
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
     
-    def get_export_data(self) -> dict:
+    def get_export_data(self, start_at: int = None, end_at: int = None) -> dict:
         """Get energy export telemetry"""
-        data = self._make_request("energy_export_telemetry", {"granularity": "week"})
+        params = {"granularity": "week"}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("energy_export_telemetry", params)
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
 
@@ -238,6 +263,24 @@ class FabricKustoClient:
             
             self.logger.info(f"No existing data for system {system_id}")
             return None
+        except KustoServiceError as e:
+            self.logger.error(f"Kusto query error: {e}")
+            raise
+    
+    def get_existing_end_ats(self, system_id: int, start_at: int, end_at: int) -> set:
+        """Get set of existing end_at timestamps in a date range for deduplication"""
+        start_dt = datetime.utcfromtimestamp(start_at)
+        end_dt = datetime.utcfromtimestamp(end_at)
+        query = f"""
+        SolarTelemetry
+        | where system_id == {system_id}
+        | where reading_time >= datetime({start_dt.isoformat()}Z) and reading_time < datetime({end_dt.isoformat()}Z)
+        | project end_at
+        """
+        try:
+            client = self._get_client()
+            response = client.execute(self.database, query)
+            return set(int(row[0]) for row in response.primary_results[0] if row[0] is not None)
         except KustoServiceError as e:
             self.logger.error(f"Kusto query error: {e}")
             raise
@@ -447,14 +490,25 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                     'custom_dimensions': {'latest_end_at': latest_end_at, 'invocation_id': invocation_id}
                 })
             
-            # Fetch all telemetry types
+            # Determine date range for fetch
+            # If we have existing data, fetch from latest timestamp to now
+            # API returns ~96 intervals (~24 hours) per request
+            start_at = None
+            end_at = int(datetime.now(timezone.utc).timestamp())
+            if latest_end_at:
+                start_at = latest_end_at
+                logger.info(f"Fetching from {datetime.utcfromtimestamp(start_at)} to {datetime.utcfromtimestamp(end_at)}", extra={
+                    'custom_dimensions': {'start_at': start_at, 'end_at': end_at, 'invocation_id': invocation_id}
+                })
+            
+            # Fetch all telemetry types with date range
             with tracer.span(name="fetch_all_telemetry"):
                 all_data = {
-                    'production': enphase_client.get_production_data(),
-                    'consumption': enphase_client.get_consumption_data(),
-                    'battery': enphase_client.get_battery_data(),
-                    'import': enphase_client.get_import_data(),
-                    'export': enphase_client.get_export_data(),
+                    'production': enphase_client.get_production_data(start_at=start_at, end_at=end_at),
+                    'consumption': enphase_client.get_consumption_data(start_at=start_at, end_at=end_at),
+                    'battery': enphase_client.get_battery_data(start_at=start_at, end_at=end_at),
+                    'import': enphase_client.get_import_data(start_at=start_at, end_at=end_at),
+                    'export': enphase_client.get_export_data(start_at=start_at, end_at=end_at),
                 }
             
             # Log what we got
@@ -523,3 +577,173 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                 'execution_duration_ms': (time.time() - execution_start) * 1000
             }
         })
+
+
+@app.route(route="backfill", auth_level=func.AuthLevel.FUNCTION)
+def backfill(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    HTTP-triggered function to backfill historical data.
+    
+    Query parameters:
+    - days: Number of days to backfill (default: 7, max: 30)
+    - delay: Seconds between API calls to avoid rate limiting (default: 2.0)
+    
+    Note: Enphase API returns ~96 intervals (~24 hours) per request,
+    so this function fetches day-by-day.
+    """
+    logger = get_logger()
+    tracer = get_tracer()
+    
+    execution_start = time.time()
+    retrieved_at = datetime.now(timezone.utc)
+    
+    with tracer.span(name="backfill") as span:
+        # Parse parameters
+        try:
+            days = int(req.params.get('days', 7))
+            days = min(days, 30)  # Cap at 30 days
+            delay = float(req.params.get('delay', 2.0))
+        except ValueError as e:
+            return func.HttpResponse(f"Invalid parameter: {e}", status_code=400)
+        
+        span.add_attribute("days", days)
+        span.add_attribute("delay", delay)
+        
+        logger.info(f"Backfill started for {days} days", extra={
+            'custom_dimensions': {'days': days, 'delay': delay}
+        })
+        
+        # Get configuration
+        api_key = os.environ.get("ENPHASE_API_KEY")
+        client_id = os.environ.get("ENPHASE_CLIENT_ID")
+        client_secret = os.environ.get("ENPHASE_CLIENT_SECRET")
+        system_id = os.environ.get("ENPHASE_SYSTEM_ID")
+        refresh_token = os.environ.get("ENPHASE_REFRESH_TOKEN")
+        kusto_cluster_uri = os.environ.get("KUSTO_CLUSTER_URI")
+        kusto_database = os.environ.get("KUSTO_DATABASE")
+        system_timezone = os.environ.get("SYSTEM_TIMEZONE", "Pacific/Honolulu")
+        
+        # Validate configuration
+        missing = []
+        for name, value in [
+            ("ENPHASE_API_KEY", api_key),
+            ("ENPHASE_CLIENT_ID", client_id),
+            ("ENPHASE_CLIENT_SECRET", client_secret),
+            ("ENPHASE_SYSTEM_ID", system_id),
+            ("ENPHASE_REFRESH_TOKEN", refresh_token),
+            ("KUSTO_CLUSTER_URI", kusto_cluster_uri),
+            ("KUSTO_DATABASE", kusto_database),
+        ]:
+            if not value:
+                missing.append(name)
+        
+        if missing:
+            return func.HttpResponse(f"Missing configuration: {', '.join(missing)}", status_code=500)
+        
+        system_id_int = int(system_id)
+        kusto_client = None
+        total_ingested = 0
+        days_processed = 0
+        errors = []
+        
+        try:
+            enphase_client = EnphaseClient(
+                api_key=api_key,
+                client_id=client_id,
+                client_secret=client_secret,
+                system_id=system_id,
+                refresh_token=refresh_token,
+                logger=logger,
+                tracer=tracer
+            )
+            
+            kusto_client = FabricKustoClient(
+                cluster_uri=kusto_cluster_uri,
+                database=kusto_database,
+                system_timezone=system_timezone,
+                logger=logger
+            )
+            
+            # Process day by day (API returns ~24 hours per request)
+            now = datetime.now(timezone.utc)
+            
+            for day_offset in range(days, 0, -1):
+                day_start = now - timedelta(days=day_offset)
+                day_end = day_start + timedelta(days=1)
+                
+                start_at = int(day_start.timestamp())
+                end_at = int(day_end.timestamp())
+                
+                try:
+                    logger.info(f"Fetching day {day_offset} days ago: {day_start.date()}", extra={
+                        'custom_dimensions': {'day_offset': day_offset, 'date': str(day_start.date())}
+                    })
+                    
+                    # Fetch all telemetry for this day
+                    all_data = {
+                        'production': enphase_client.get_production_data(start_at=start_at, end_at=end_at),
+                        'consumption': enphase_client.get_consumption_data(start_at=start_at, end_at=end_at),
+                        'battery': enphase_client.get_battery_data(start_at=start_at, end_at=end_at),
+                        'import': enphase_client.get_import_data(start_at=start_at, end_at=end_at),
+                        'export': enphase_client.get_export_data(start_at=start_at, end_at=end_at),
+                    }
+                    
+                    # Merge intervals
+                    merged = merge_intervals(all_data)
+                    
+                    if merged:
+                        # Get existing timestamps for this range
+                        existing = kusto_client.get_existing_end_ats(system_id_int, start_at, end_at)
+                        
+                        # Filter to new intervals only
+                        new_intervals = [m for m in merged if m['end_at'] not in existing]
+                        
+                        if new_intervals:
+                            ingested = kusto_client.ingest_unified_telemetry(
+                                system_id_int, retrieved_at, new_intervals
+                            )
+                            total_ingested += ingested
+                            logger.info(f"Ingested {ingested} intervals for {day_start.date()}", extra={
+                                'custom_dimensions': {'date': str(day_start.date()), 'ingested': ingested}
+                            })
+                    
+                    days_processed += 1
+                    
+                    # Rate limiting delay
+                    if day_offset > 1:
+                        time.sleep(delay)
+                        
+                except Exception as e:
+                    error_msg = f"Error fetching {day_start.date()}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg, extra={'custom_dimensions': {'date': str(day_start.date())}})
+                    # Extra delay on error (rate limiting)
+                    time.sleep(delay * 3)
+            
+            execution_duration_ms = (time.time() - execution_start) * 1000
+            
+            result = {
+                "status": "completed",
+                "days_requested": days,
+                "days_processed": days_processed,
+                "total_ingested": total_ingested,
+                "execution_duration_ms": execution_duration_ms,
+                "errors": errors
+            }
+            
+            logger.info(f"Backfill completed: {total_ingested} intervals ingested", extra={
+                'custom_dimensions': result
+            })
+            
+            return func.HttpResponse(
+                json.dumps(result, indent=2),
+                mimetype="application/json",
+                status_code=200
+            )
+            
+        except Exception as e:
+            logger.error(f"Backfill failed: {e}", extra={'custom_dimensions': {'error': str(e)}})
+            return func.HttpResponse(f"Backfill failed: {e}", status_code=500)
+        finally:
+            if kusto_client:
+                kusto_client.close()
