@@ -355,14 +355,26 @@ class IncrementalEnphaseFetcher:
         # Get latest timestamp from unified table
         latest_end_at = self.kusto_client.get_latest_telemetry_end_at(self.system_id)
         
-        if latest_end_at:
-            logger.info(f"Latest data: {datetime.utcfromtimestamp(latest_end_at)}")
-        else:
-            logger.info("No existing data - will fetch all available")
+        # Determine fetch range - if we have existing data, fetch from where we left off
+        start_at = None
+        end_at = None
         
-        # Fetch all telemetry types
+        if latest_end_at:
+            latest_dt = datetime.utcfromtimestamp(latest_end_at)
+            logger.info(f"Latest data: {latest_dt}")
+            
+            # Set start_at to fetch from the last known timestamp
+            # This ensures we get ALL data since our last fetch, not just the default ~2 days
+            start_at = latest_end_at
+            end_at = int(datetime.now().timestamp())
+            
+            logger.info(f"Fetching data from {latest_dt} to now")
+        else:
+            logger.info("No existing data - will fetch all available (default API range)")
+        
+        # Fetch all telemetry types with date range if we have prior data
         logger.info("Fetching all 5 telemetry types from Enphase API...")
-        all_data = self._fetch_all_telemetry()
+        all_data = self._fetch_all_telemetry(start_at=start_at, end_at=end_at)
         
         # Log what we got
         for ttype, data in all_data.items():
@@ -400,18 +412,23 @@ class IncrementalEnphaseFetcher:
         
         return ingested
     
-    def backfill_unified(self, weeks: int = 4) -> int:
+    def backfill_unified(self, weeks: int = 4, delay_seconds: float = 2.0) -> int:
         """
-        Backfill historical data to unified SolarTelemetry table
+        Backfill historical data to unified SolarTelemetry table.
+        Fetches data DAY BY DAY since the Enphase API only returns ~1 day per request.
         
         Args:
             weeks: Number of weeks to backfill (default: 4)
+            delay_seconds: Delay between API requests to avoid rate limiting (default: 2.0)
             
         Returns:
             Total number of intervals ingested
         """
+        import time
+        
         logger.info("=" * 60)
-        logger.info(f"Starting unified backfill for {weeks} weeks of historical data")
+        logger.info(f"Starting unified backfill for {weeks} weeks ({weeks * 7} days) of historical data")
+        logger.info(f"Note: Enphase API returns ~1 day per request, so fetching day by day")
         logger.info("=" * 60)
         
         # First, get all existing end_at values to avoid duplicates
@@ -419,20 +436,25 @@ class IncrementalEnphaseFetcher:
         logger.info(f"Found {len(existing_end_ats)} existing intervals to skip")
         
         total_ingested = 0
+        total_days = weeks * 7
         now = datetime.now()
         
-        for week_num in range(weeks, 0, -1):
-            # Calculate week boundaries (going backwards)
-            week_end = now - timedelta(weeks=week_num - 1)
-            week_start = week_end - timedelta(weeks=1)
+        for day_offset in range(total_days, 0, -1):
+            # Calculate day boundaries (going backwards from today)
+            day_end = now - timedelta(days=day_offset - 1)
+            day_start = day_end - timedelta(days=1)
             
-            start_at = int(week_start.timestamp())
-            end_at = int(week_end.timestamp())
+            start_at = int(day_start.timestamp())
+            end_at = int(day_end.timestamp())
             
-            logger.info(f"\nFetching week {weeks - week_num + 1}/{weeks}: {week_start.date()} to {week_end.date()}")
+            logger.info(f"\nFetching day {total_days - day_offset + 1}/{total_days}: {day_start.date()}")
             
             try:
-                # Fetch all telemetry types for this week
+                # Add delay to avoid rate limiting (except for the first request)
+                if day_offset < total_days:
+                    time.sleep(delay_seconds)
+                
+                # Fetch all telemetry types for this day
                 all_data = self._fetch_all_telemetry(start_at=start_at, end_at=end_at)
                 
                 # Merge by end_at
@@ -464,7 +486,10 @@ class IncrementalEnphaseFetcher:
                 existing_end_ats.update(m['end_at'] for m in new_intervals)
                 
             except Exception as e:
-                logger.error(f"Failed to backfill week: {e}")
+                logger.error(f"Failed to backfill day {day_start.date()}: {e}")
+                # Add extra delay on error (likely rate limiting)
+                logger.info("Adding extra delay due to error...")
+                time.sleep(delay_seconds * 3)
         
         logger.info("\n" + "=" * 60)
         logger.info(f"Backfill complete: {total_ingested} total intervals")
