@@ -1,16 +1,21 @@
 """
 Azure Functions V2 - Enphase Solar Data Poller
-Polls Enphase API every 4 hours and sends telemetry to Fabric Eventstream
+Polls Enphase API and writes unified telemetry directly to Fabric Eventhouse (Kusto)
 """
 import azure.functions as func
 import logging
 import os
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
+from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 import requests
-from azure.eventhub import EventHubProducerClient, EventData
+from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+from azure.kusto.data.exceptions import KustoServiceError
+from azure.identity import DefaultAzureCredential
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure.trace_exporter import AzureExporter
 from opencensus.trace import config_integration
@@ -26,6 +31,7 @@ ENPHASE_TOKEN_URL = "https://api.enphaseenergy.com/oauth/token"
 # Configure OpenCensus for distributed tracing
 config_integration.trace_integrations(['requests'])
 
+
 def get_tracer():
     """Get configured tracer for Application Insights"""
     connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
@@ -35,6 +41,7 @@ def get_tracer():
             sampler=AlwaysOnSampler()
         )
     return Tracer(sampler=AlwaysOnSampler())
+
 
 def get_logger():
     """Get logger configured with Application Insights"""
@@ -148,157 +155,222 @@ class EnphaseClient:
         
         raise Exception("Failed after token refresh")
     
-    def get_production_data(self, granularity: str = "week") -> dict:
+    def get_production_data(self) -> dict:
         """Get production meter telemetry"""
-        return self._make_request("telemetry/production_meter", {"granularity": granularity})
+        data = self._make_request("telemetry/production_meter", {"granularity": "week"})
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
     
-    def get_consumption_data(self, granularity: str = "week") -> dict:
+    def get_consumption_data(self) -> dict:
         """Get consumption meter telemetry"""
-        return self._make_request("telemetry/consumption_meter", {"granularity": granularity})
+        data = self._make_request("telemetry/consumption_meter", {"granularity": "week"})
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
     
-    def get_battery_data(self, granularity: str = "week") -> dict:
+    def get_battery_data(self) -> dict:
         """Get battery telemetry"""
-        return self._make_request("telemetry/battery", {"granularity": granularity})
+        data = self._make_request("telemetry/battery", {"granularity": "week"})
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
     
-    def get_import_data(self, granularity: str = "week") -> dict:
+    def get_import_data(self) -> dict:
         """Get energy import telemetry"""
-        return self._make_request("energy_import_telemetry", {"granularity": granularity})
+        data = self._make_request("energy_import_telemetry", {"granularity": "week"})
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
     
-    def get_export_data(self, granularity: str = "week") -> dict:
+    def get_export_data(self) -> dict:
         """Get energy export telemetry"""
-        return self._make_request("energy_export_telemetry", {"granularity": granularity})
-    
-    def get_all_telemetry(self, granularity: str = "week") -> dict:
-        """Get all available telemetry types"""
-        results = {}
-        
-        endpoints = [
-            ("production", self.get_production_data),
-            ("consumption", self.get_consumption_data),
-            ("battery", self.get_battery_data),
-            ("import", self.get_import_data),
-            ("export", self.get_export_data),
-        ]
-        
-        for name, method in endpoints:
-            try:
-                results[name] = method(granularity)
-                self.logger.info(f"Retrieved {name} telemetry", extra={
-                    'custom_dimensions': {'telemetry_type': name, 'system_id': self.system_id}
-                })
-            except Exception as e:
-                self.logger.warning(f"Failed to get {name} telemetry: {e}", extra={
-                    'custom_dimensions': {'telemetry_type': name, 'error': str(e)}
-                })
-                results[name] = None
-        
-        return results
+        data = self._make_request("energy_export_telemetry", {"granularity": "week"})
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
 
 
-def send_to_eventstream(connection_string: str, eventhub_name: str, events: list, logger=None):
-    """Send events to Fabric Eventstream via Event Hub"""
-    logger = logger or logging.getLogger(__name__)
-    start_time = time.time()
+class FabricKustoClient:
+    """Client for writing to Fabric Eventhouse (Kusto) using managed identity"""
     
-    producer = EventHubProducerClient.from_connection_string(
-        conn_str=connection_string,
-        eventhub_name=eventhub_name
-    )
+    DEFAULT_TIMEZONE = 'Pacific/Honolulu'
     
-    try:
-        with producer:
-            event_data_batch = producer.create_batch()
-            for event in events:
-                event_data_batch.add(EventData(json.dumps(event)))
-            producer.send_batch(event_data_batch)
+    def __init__(self, cluster_uri: str, database: str, system_timezone: str = None, logger=None):
+        self.cluster_uri = cluster_uri
+        self.database = database
+        self.system_timezone = system_timezone or self.DEFAULT_TIMEZONE
+        self._tz = ZoneInfo(self.system_timezone)
+        self._client: Optional[KustoClient] = None
+        self.logger = logger or logging.getLogger(__name__)
+    
+    def _get_client(self) -> KustoClient:
+        """Get or create the Kusto client with managed identity auth"""
+        if self._client is None:
+            # Use DefaultAzureCredential for managed identity in Azure Functions
+            credential = DefaultAzureCredential()
+            kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
+                self.cluster_uri, credential
+            )
+            self._client = KustoClient(kcsb)
+            self.logger.info(f"Connected to Kusto cluster: {self.cluster_uri}")
+        return self._client
+    
+    def _utc_to_local(self, utc_dt: datetime) -> datetime:
+        """Convert UTC datetime to local time"""
+        if utc_dt is None:
+            return None
+        utc_aware = utc_dt.replace(tzinfo=timezone.utc)
+        local_dt = utc_aware.astimezone(self._tz)
+        return local_dt.replace(tzinfo=None)
+    
+    def get_latest_end_at(self, system_id: int) -> Optional[int]:
+        """Get the most recent end_at timestamp from SolarTelemetry"""
+        query = f"""
+        SolarTelemetry
+        | where system_id == {system_id}
+        | summarize max(end_at)
+        """
+        try:
+            client = self._get_client()
+            response = client.execute(self.database, query)
             
-        duration_ms = (time.time() - start_time) * 1000
-        logger.info(f"Sent {len(events)} events to Eventstream", extra={
-            'custom_dimensions': {
-                'operation': 'send_to_eventstream',
-                'event_count': len(events),
-                'duration_ms': duration_ms,
-                'eventhub_name': eventhub_name
-            }
-        })
-    except Exception as e:
-        duration_ms = (time.time() - start_time) * 1000
-        logger.error(f"Failed to send events to Eventstream: {e}", extra={
-            'custom_dimensions': {
-                'operation': 'send_to_eventstream',
-                'event_count': len(events),
-                'duration_ms': duration_ms,
-                'error': str(e)
-            }
-        })
-        raise
+            for row in response.primary_results[0]:
+                max_end_at = row[0]
+                if max_end_at is not None:
+                    self.logger.info(f"Latest end_at: {max_end_at}")
+                    return int(max_end_at)
+            
+            self.logger.info(f"No existing data for system {system_id}")
+            return None
+        except KustoServiceError as e:
+            self.logger.error(f"Kusto query error: {e}")
+            raise
+    
+    def ingest_unified_telemetry(self, system_id: int, retrieved_at: datetime, 
+                                  merged_intervals: List[Dict]) -> int:
+        """Ingest merged telemetry data into the unified SolarTelemetry table"""
+        client = self._get_client()
+        ingested = 0
+        
+        for interval in merged_intervals:
+            end_at = interval.get('end_at')
+            reading_time = datetime.utcfromtimestamp(end_at) if end_at else None
+            reading_time_local = self._utc_to_local(reading_time)
+            
+            # Extract all measures with defaults
+            production_wh = interval.get('production_wh', 0.0)
+            production_devices = interval.get('production_devices', 0)
+            consumption_wh = interval.get('consumption_wh', 0.0)
+            consumption_devices = interval.get('consumption_devices', 0)
+            battery_charge_wh = interval.get('battery_charge_wh', 0.0)
+            battery_discharge_wh = interval.get('battery_discharge_wh', 0.0)
+            battery_soc_percent = interval.get('battery_soc_percent', 0.0)
+            battery_devices = interval.get('battery_devices', 0)
+            grid_import_wh = interval.get('grid_import_wh', 0.0)
+            grid_export_wh = interval.get('grid_export_wh', 0.0)
+            
+            command = f""".ingest inline into table SolarTelemetry <|
+{system_id},{end_at},{reading_time.isoformat() if reading_time else ''},{retrieved_at.isoformat()},{production_wh},{production_devices},{consumption_wh},{consumption_devices},{battery_charge_wh},{battery_discharge_wh},{battery_soc_percent},{battery_devices},{grid_import_wh},{grid_export_wh},{reading_time_local.isoformat() if reading_time_local else ''}"""
+            
+            try:
+                client.execute(self.database, command)
+                ingested += 1
+            except KustoServiceError as e:
+                self.logger.error(f"Failed to ingest telemetry row: {e}")
+        
+        self.logger.info(f"Ingested {ingested} unified telemetry rows")
+        return ingested
+    
+    def close(self):
+        """Close the client connection"""
+        if self._client:
+            self._client.close()
+            self._client = None
 
 
-def process_telemetry(telemetry_type: str, data: dict, retrieved_at: str) -> list:
-    """Process telemetry data into individual events"""
-    events = []
+def flatten_intervals(raw_intervals: List, is_nested: bool = False) -> List[Dict]:
+    """Flatten nested interval structure if needed"""
+    if is_nested and raw_intervals and isinstance(raw_intervals[0], list):
+        return raw_intervals[0]
+    return raw_intervals
+
+
+def merge_intervals(all_data: Dict[str, Dict]) -> List[Dict]:
+    """Merge all telemetry types into unified interval records by end_at timestamp"""
+    merged: Dict[int, Dict] = defaultdict(lambda: {
+        'end_at': None,
+        'production_wh': 0.0,
+        'production_devices': 0,
+        'consumption_wh': 0.0,
+        'consumption_devices': 0,
+        'battery_charge_wh': 0.0,
+        'battery_discharge_wh': 0.0,
+        'battery_soc_percent': 0.0,
+        'battery_devices': 0,
+        'grid_import_wh': 0.0,
+        'grid_export_wh': 0.0,
+    })
     
-    if not data:
-        return events
+    # Process production
+    for interval in all_data.get('production', {}).get('intervals', []):
+        end_at = interval.get('end_at')
+        if end_at:
+            merged[end_at]['end_at'] = end_at
+            merged[end_at]['production_wh'] = interval.get('wh_del', 0.0)
+            merged[end_at]['production_devices'] = interval.get('devices_reporting', 0)
     
-    system_id = data.get("system_id")
+    # Process consumption
+    for interval in all_data.get('consumption', {}).get('intervals', []):
+        end_at = interval.get('end_at')
+        if end_at:
+            merged[end_at]['end_at'] = end_at
+            merged[end_at]['consumption_wh'] = interval.get('enwh', 0.0)
+            merged[end_at]['consumption_devices'] = interval.get('devices_reporting', 0)
     
-    # Handle different response structures from various endpoints
-    intervals = data.get("intervals", [])
+    # Process battery
+    for interval in all_data.get('battery', {}).get('intervals', []):
+        end_at = interval.get('end_at')
+        if end_at:
+            merged[end_at]['end_at'] = end_at
+            charge = interval.get('charge', {})
+            discharge = interval.get('discharge', {})
+            soc = interval.get('soc', {})
+            merged[end_at]['battery_charge_wh'] = charge.get('enwh', 0.0)
+            merged[end_at]['battery_discharge_wh'] = discharge.get('enwh', 0.0)
+            merged[end_at]['battery_soc_percent'] = soc.get('percent', 0.0)
+            merged[end_at]['battery_devices'] = charge.get('devices_reporting', 0)
     
-    for interval in intervals:
-        # Check if interval is a dict (most endpoints) or needs wrapping
+    # Process import (flatten nested structure)
+    import_intervals = all_data.get('import', {}).get('intervals', [])
+    import_intervals = flatten_intervals(import_intervals, is_nested=True)
+    for interval in import_intervals:
         if isinstance(interval, dict):
-            event = {
-                "telemetry_type": telemetry_type,
-                "system_id": system_id,
-                "retrieved_at": retrieved_at,
-                **interval
-            }
-        else:
-            # Some endpoints may return simple values
-            event = {
-                "telemetry_type": telemetry_type,
-                "system_id": system_id,
-                "retrieved_at": retrieved_at,
-                "value": interval
-            }
-        events.append(event)
+            end_at = interval.get('end_at')
+            if end_at:
+                merged[end_at]['end_at'] = end_at
+                merged[end_at]['grid_import_wh'] = interval.get('wh_imported', 0.0)
     
-    # Also handle 'readings' key (used by battery endpoint)
-    readings = data.get("readings", [])
-    for reading in readings:
-        if isinstance(reading, dict):
-            event = {
-                "telemetry_type": telemetry_type,
-                "system_id": system_id,
-                "retrieved_at": retrieved_at,
-                **reading
-            }
-        else:
-            event = {
-                "telemetry_type": telemetry_type,
-                "system_id": system_id,
-                "retrieved_at": retrieved_at,
-                "value": reading
-            }
-        events.append(event)
+    # Process export (flatten nested structure)
+    export_intervals = all_data.get('export', {}).get('intervals', [])
+    export_intervals = flatten_intervals(export_intervals, is_nested=True)
+    for interval in export_intervals:
+        if isinstance(interval, dict):
+            end_at = interval.get('end_at')
+            if end_at:
+                merged[end_at]['end_at'] = end_at
+                merged[end_at]['grid_export_wh'] = interval.get('wh_exported', 0.0)
     
-    return events
+    # Convert to sorted list
+    return [merged[end_at] for end_at in sorted(merged.keys())]
 
 
 @app.timer_trigger(schedule="0 0 */4 * * *", arg_name="myTimer", run_on_startup=False,
                    use_monitor=True)
 def enphase_poller(myTimer: func.TimerRequest) -> None:
-    """Timer-triggered function to poll Enphase and send to Eventstream"""
+    """Timer-triggered function to poll Enphase and write to Kusto (every 4 hours)"""
     
-    # Initialize instrumented logger and tracer
     logger = get_logger()
     tracer = get_tracer()
     
     execution_start = time.time()
-    retrieved_at = datetime.now(timezone.utc).isoformat()
-    invocation_id = os.environ.get("INVOCATION_ID", retrieved_at)
+    retrieved_at = datetime.now(timezone.utc)
+    invocation_id = os.environ.get("INVOCATION_ID", retrieved_at.isoformat())
     
     with tracer.span(name="enphase_poller") as span:
         span.add_attribute("invocation_id", invocation_id)
@@ -309,7 +381,7 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             })
         
         logger.info("EnphasePoller function started", extra={
-            'custom_dimensions': {'invocation_id': invocation_id, 'retrieved_at': retrieved_at}
+            'custom_dimensions': {'invocation_id': invocation_id, 'retrieved_at': retrieved_at.isoformat()}
         })
         
         # Get configuration from environment
@@ -318,8 +390,9 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
         client_secret = os.environ.get("ENPHASE_CLIENT_SECRET")
         system_id = os.environ.get("ENPHASE_SYSTEM_ID")
         refresh_token = os.environ.get("ENPHASE_REFRESH_TOKEN")
-        connection_string = os.environ.get("EVENTHUB_CONNECTION_STRING")
-        eventhub_name = os.environ.get("EVENTHUB_NAME")
+        kusto_cluster_uri = os.environ.get("KUSTO_CLUSTER_URI")
+        kusto_database = os.environ.get("KUSTO_DATABASE")
+        system_timezone = os.environ.get("SYSTEM_TIMEZONE", "Pacific/Honolulu")
         
         # Validate configuration
         missing = []
@@ -329,8 +402,8 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             ("ENPHASE_CLIENT_SECRET", client_secret),
             ("ENPHASE_SYSTEM_ID", system_id),
             ("ENPHASE_REFRESH_TOKEN", refresh_token),
-            ("EVENTHUB_CONNECTION_STRING", connection_string),
-            ("EVENTHUB_NAME", eventhub_name),
+            ("KUSTO_CLUSTER_URI", kusto_cluster_uri),
+            ("KUSTO_DATABASE", kusto_database),
         ]:
             if not value:
                 missing.append(name)
@@ -341,11 +414,14 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             })
             return
         
+        system_id_int = int(system_id)
         span.add_attribute("system_id", system_id)
         
+        kusto_client = None
+        
         try:
-            # Initialize Enphase client with instrumentation
-            client = EnphaseClient(
+            # Initialize clients
+            enphase_client = EnphaseClient(
                 api_key=api_key,
                 client_id=client_id,
                 client_secret=client_secret,
@@ -355,43 +431,74 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                 tracer=tracer
             )
             
-            # Get all telemetry
+            kusto_client = FabricKustoClient(
+                cluster_uri=kusto_cluster_uri,
+                database=kusto_database,
+                system_timezone=system_timezone,
+                logger=logger
+            )
+            
+            # Get latest timestamp to filter duplicates
+            with tracer.span(name="get_latest_end_at"):
+                latest_end_at = kusto_client.get_latest_end_at(system_id_int)
+            
+            if latest_end_at:
+                logger.info(f"Latest data timestamp: {datetime.utcfromtimestamp(latest_end_at)}", extra={
+                    'custom_dimensions': {'latest_end_at': latest_end_at, 'invocation_id': invocation_id}
+                })
+            
+            # Fetch all telemetry types
             with tracer.span(name="fetch_all_telemetry"):
-                all_telemetry = client.get_all_telemetry(granularity="week")
+                all_data = {
+                    'production': enphase_client.get_production_data(),
+                    'consumption': enphase_client.get_consumption_data(),
+                    'battery': enphase_client.get_battery_data(),
+                    'import': enphase_client.get_import_data(),
+                    'export': enphase_client.get_export_data(),
+                }
             
-            # Process into events
-            all_events = []
-            telemetry_counts = {}
-            for telemetry_type, data in all_telemetry.items():
-                if data:
-                    events = process_telemetry(telemetry_type, data, retrieved_at)
-                    all_events.extend(events)
-                    telemetry_counts[telemetry_type] = len(events)
-                    logger.info(f"Processed {len(events)} {telemetry_type} events", extra={
-                        'custom_dimensions': {
-                            'telemetry_type': telemetry_type,
-                            'event_count': len(events),
-                            'invocation_id': invocation_id
-                        }
-                    })
+            # Log what we got
+            for ttype, data in all_data.items():
+                intervals = data.get('intervals', [])
+                if ttype in ['import', 'export'] and intervals and isinstance(intervals[0], list):
+                    intervals = intervals[0]
+                logger.info(f"Fetched {len(intervals)} {ttype} intervals", extra={
+                    'custom_dimensions': {'telemetry_type': ttype, 'interval_count': len(intervals)}
+                })
             
-            # Send to Eventstream
-            if all_events:
-                with tracer.span(name="send_to_eventstream"):
-                    send_to_eventstream(connection_string, eventhub_name, all_events, logger)
+            # Merge by end_at
+            with tracer.span(name="merge_intervals"):
+                merged = merge_intervals(all_data)
+            
+            logger.info(f"Merged into {len(merged)} unified intervals", extra={
+                'custom_dimensions': {'merged_count': len(merged), 'invocation_id': invocation_id}
+            })
+            
+            # Filter to only new intervals
+            if latest_end_at:
+                merged = [m for m in merged if m['end_at'] > latest_end_at]
+                logger.info(f"After filtering: {len(merged)} new intervals", extra={
+                    'custom_dimensions': {'new_count': len(merged), 'invocation_id': invocation_id}
+                })
+            
+            # Ingest to Kusto
+            if merged:
+                with tracer.span(name="ingest_to_kusto"):
+                    ingested = kusto_client.ingest_unified_telemetry(
+                        system_id_int, retrieved_at, merged
+                    )
                 
                 execution_duration_ms = (time.time() - execution_start) * 1000
-                logger.info(f"Successfully sent {len(all_events)} total events", extra={
+                logger.info(f"Successfully ingested {ingested} intervals", extra={
                     'custom_dimensions': {
-                        'total_events': len(all_events),
-                        'telemetry_counts': json.dumps(telemetry_counts),
+                        'ingested_count': ingested,
                         'execution_duration_ms': execution_duration_ms,
                         'invocation_id': invocation_id,
                         'system_id': system_id
                     }
                 })
             else:
-                logger.warning("No events to send", extra={
+                logger.info("No new intervals to ingest", extra={
                     'custom_dimensions': {'invocation_id': invocation_id}
                 })
                 
@@ -406,6 +513,9 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                 }
             })
             raise
+        finally:
+            if kusto_client:
+                kusto_client.close()
         
         logger.info("EnphasePoller function completed", extra={
             'custom_dimensions': {

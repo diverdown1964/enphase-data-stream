@@ -6,10 +6,59 @@ import os
 import json
 import requests
 import logging
+import time
+from functools import wraps
 from typing import Dict, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+def retry_on_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0):
+    """
+    Decorator that retries a function on transient errors with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.RequestException as e:
+                    last_exception = e
+                    
+                    # Check if it's a retryable error
+                    status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+                    
+                    # Don't retry on client errors (4xx) except 429 (rate limit) and 408 (timeout)
+                    if status_code and 400 <= status_code < 500 and status_code not in (429, 408):
+                        logger.error(f"Non-retryable error {status_code} in {func.__name__}: {e}")
+                        raise
+                    
+                    if attempt < max_retries:
+                        # Exponential backoff with jitter
+                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {func.__name__}: {e}")
+                        logger.info(f"Retrying in {delay:.1f} seconds...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"All {max_retries + 1} attempts failed for {func.__name__}")
+                        raise
+                except Exception as e:
+                    # Don't retry on non-request exceptions
+                    logger.error(f"Non-retryable exception in {func.__name__}: {e}")
+                    raise
+            
+            # Should not reach here, but just in case
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class EnphaseClient:
@@ -190,9 +239,14 @@ class EnphaseClient:
         # No way to get a token
         raise Exception("No authorization code or refresh token available. Please authenticate first.")
     
-    def get_production_data(self) -> Dict:
+    @retry_on_error(max_retries=3, base_delay=2.0, max_delay=30.0)
+    def get_production_data(self, start_at: int = None, end_at: int = None) -> Dict:
         """
         Get current production data from Enphase system using v4 telemetry endpoint
+        
+        Args:
+            start_at: Unix timestamp for start of range (optional)
+            end_at: Unix timestamp for end of range (optional)
         
         Returns:
             Dictionary containing production telemetry data
@@ -210,8 +264,15 @@ class EnphaseClient:
         # Use v4 telemetry endpoint
         endpoint = f"{self.base_url}/systems/{self.system_id}/telemetry/production_meter"
         
+        # Add time range parameters if provided
+        params = {}
+        if start_at:
+            params['start_at'] = start_at
+        if end_at:
+            params['end_at'] = end_at
+        
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()
@@ -227,9 +288,14 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve production data: {e}")
             raise
     
-    def get_consumption_data(self) -> Dict:
+    @retry_on_error(max_retries=3, base_delay=2.0, max_delay=30.0)
+    def get_consumption_data(self, start_at: int = None, end_at: int = None) -> Dict:
         """
         Get consumption data from Enphase system
+        
+        Args:
+            start_at: Unix timestamp for start of range (optional)
+            end_at: Unix timestamp for end of range (optional)
         
         Returns:
             Dictionary containing consumption telemetry data
@@ -245,8 +311,14 @@ class EnphaseClient:
         
         endpoint = f"{self.base_url}/systems/{self.system_id}/telemetry/consumption_meter"
         
+        params = {}
+        if start_at:
+            params['start_at'] = start_at
+        if end_at:
+            params['end_at'] = end_at
+        
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()
@@ -260,9 +332,14 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve consumption data: {e}")
             raise
     
-    def get_battery_data(self) -> Dict:
+    @retry_on_error(max_retries=3, base_delay=2.0, max_delay=30.0)
+    def get_battery_data(self, start_at: int = None, end_at: int = None) -> Dict:
         """
         Get battery data from Enphase system
+        
+        Args:
+            start_at: Unix timestamp for start of range (optional)
+            end_at: Unix timestamp for end of range (optional)
         
         Returns:
             Dictionary containing battery telemetry data
@@ -278,8 +355,14 @@ class EnphaseClient:
         
         endpoint = f"{self.base_url}/systems/{self.system_id}/telemetry/battery"
         
+        params = {}
+        if start_at:
+            params['start_at'] = start_at
+        if end_at:
+            params['end_at'] = end_at
+        
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()
@@ -293,9 +376,14 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve battery data: {e}")
             raise
     
-    def get_import_data(self) -> Dict:
+    @retry_on_error(max_retries=3, base_delay=2.0, max_delay=30.0)
+    def get_import_data(self, start_at: int = None, end_at: int = None) -> Dict:
         """
         Get grid import data from Enphase system
+        
+        Args:
+            start_at: Unix timestamp for start of range (optional)
+            end_at: Unix timestamp for end of range (optional)
         
         Returns:
             Dictionary containing energy import telemetry data
@@ -311,8 +399,14 @@ class EnphaseClient:
         
         endpoint = f"{self.base_url}/systems/{self.system_id}/energy_import_telemetry"
         
+        params = {}
+        if start_at:
+            params['start_at'] = start_at
+        if end_at:
+            params['end_at'] = end_at
+        
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()
@@ -326,9 +420,14 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve import data: {e}")
             raise
     
-    def get_export_data(self) -> Dict:
+    @retry_on_error(max_retries=3, base_delay=2.0, max_delay=30.0)
+    def get_export_data(self, start_at: int = None, end_at: int = None) -> Dict:
         """
         Get grid export data from Enphase system
+        
+        Args:
+            start_at: Unix timestamp for start of range (optional)
+            end_at: Unix timestamp for end of range (optional)
         
         Returns:
             Dictionary containing energy export telemetry data
@@ -344,8 +443,14 @@ class EnphaseClient:
         
         endpoint = f"{self.base_url}/systems/{self.system_id}/energy_export_telemetry"
         
+        params = {}
+        if start_at:
+            params['start_at'] = start_at
+        if end_at:
+            params['end_at'] = end_at
+        
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()

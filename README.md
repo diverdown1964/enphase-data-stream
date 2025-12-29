@@ -1,57 +1,52 @@
-# Enphase to Microsoft Fabric Eventstream
+# Enphase Solar Data to Microsoft Fabric
 
-An Azure Functions application that polls the Enphase Energy API for solar production data and streams it to Microsoft Fabric Eventstream via Azure Event Hubs.
+An Azure Functions application that polls the Enphase Energy API for solar production data and ingests it directly into Microsoft Fabric Eventhouse (Kusto).
 
 ## ✅ Current Status
 
-The application is **deployed and running** as an Azure Function App, streaming solar telemetry data to Microsoft Fabric.
+The application is **deployed and running** as an Azure Function App, ingesting solar telemetry data into Microsoft Fabric Eventhouse.
 
 **What's Working:**
 - ✅ Azure Functions V2 with timer trigger (every 4 hours)
 - ✅ OAuth 2.0 authentication with Enphase API v4
-- ✅ Token persistence with automatic refresh
+- ✅ Automatic token refresh
 - ✅ Production, consumption, battery, import, and export telemetry retrieval
-- ✅ Real-time streaming to Microsoft Fabric Eventstream
+- ✅ Direct ingestion to Microsoft Fabric Eventhouse via Kusto SDK
+- ✅ Unified telemetry schema with all metrics in a single table
 - ✅ Application Insights integration for monitoring and distributed tracing
-- ✅ Data stored in Fabric Eventhouse (KQL database)
+- ✅ Managed Identity authentication to Fabric
 
-**Telemetry Types Collected:**
-- Production meter data
-- Consumption meter data
-- Battery telemetry
-- Energy import telemetry
-- Energy export telemetry
+**Telemetry Collected:**
+- Production meter (solar generation)
+- Consumption meter (home usage)
+- Battery state (charge level, power flow)
+- Grid energy import
+- Grid energy export
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
-│  Enphase API    │────▶│  Azure Function  │────▶│  Fabric Eventstream │
-│  (Solar Data)   │     │  (Timer Trigger) │     │  (Event Hub)        │
+│  Enphase API    │────▶│  Azure Function  │────▶│  Fabric Eventhouse  │
+│  (Solar Data)   │     │  (Timer: 4 hrs)  │     │  (Kusto Database)   │
 └─────────────────┘     └──────────────────┘     └─────────────────────┘
-                                │                          │
-                                ▼                          ▼
-                        ┌──────────────────┐     ┌─────────────────────┐
-                        │  App Insights    │     │  Fabric Eventhouse  │
-                        │  (Monitoring)    │     │  (KQL Database)     │
-                        └──────────────────┘     └─────────────────────┘
+                                │                          
+                                ▼                          
+                        ┌──────────────────┐     
+                        │  App Insights    │     
+                        │  (Monitoring)    │     
+                        └──────────────────┘     
 ```
 
 ## Features
 
-- ⏰ Timer-triggered Azure Function (runs every 4 hours)
-- 🔄 Polls multiple Enphase telemetry endpoints
-- ☁️ Streams data to Microsoft Fabric Eventstream via Azure Event Hubs
-- 🔐 OAuth 2.0 authentication with automatic token refresh
-- 📊 Application Insights integration with OpenCensus tracing
-- 📈 Data stored in Fabric Eventhouse for KQL analysis
-
-## Prerequisites
-
-- Python 3.11 or higher
-- Azure subscription with Function App
-- Enphase Energy account with API access
-- Microsoft Fabric workspace with Eventstream and Eventhouse
+- ⏰ **Timer-triggered** Azure Function (runs every 4 hours)
+- 🔄 **Polls multiple** Enphase telemetry endpoints in parallel
+- 📊 **Unified schema** - All telemetry types stored in a single table with consistent columns
+- 🔐 **Managed Identity** authentication to Fabric Eventhouse
+- 🔑 **OAuth 2.0** with automatic token refresh for Enphase API
+- 📈 **Application Insights** integration with OpenCensus distributed tracing
+- 🌴 **Timezone aware** - Converts UTC timestamps to local timezone (configurable)
 
 ## Project Structure
 
@@ -59,14 +54,14 @@ The application is **deployed and running** as an Azure Function App, streaming 
 enphase-data-stream/
 ├── function_app.py             # Azure Functions entry point (timer trigger)
 ├── host.json                   # Azure Functions host configuration
-├── local.settings.json         # Local development settings (not in git)
+├── local.settings.json         # Local development settings (git-ignored)
 ├── requirements.txt            # Python dependencies
-├── src/
-│   ├── main.py                 # Standalone application entry point
+├── src/                        # Local development modules
+│   ├── main.py                 # Standalone entry point
 │   ├── enphase_client.py       # Enphase API client
-│   └── eventstream_sender.py   # Microsoft Fabric Eventstream sender
-├── check_all_telemetry.py      # Utility: Check all telemetry endpoints
-├── check_latest_snapshot.py    # Utility: Check latest data snapshot
+│   ├── kusto_client.py         # Kusto ingestion client
+│   ├── eventstream_sender.py   # EventHub sender (legacy)
+│   └── local_runner.py         # Local testing runner
 ├── QUICKSTART.md               # Quick start guide
 └── README.md                   # This file
 ```
@@ -82,8 +77,9 @@ enphase-data-stream/
 | `ENPHASE_CLIENT_SECRET` | OAuth client secret | Yes |
 | `ENPHASE_SYSTEM_ID` | Your Enphase system ID | Yes |
 | `ENPHASE_REFRESH_TOKEN` | OAuth refresh token | Yes |
-| `EVENTHUB_CONNECTION_STRING` | Azure Event Hub connection string | Yes |
-| `EVENTHUB_NAME` | Event Hub/Eventstream name | Yes |
+| `KUSTO_CLUSTER_URI` | Fabric Eventhouse cluster URI | Yes |
+| `KUSTO_DATABASE` | Kusto database name | Yes |
+| `SYSTEM_TIMEZONE` | Local timezone (e.g., `Pacific/Honolulu`) | Yes |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights connection | Yes |
 
 ### Local Development
@@ -98,6 +94,7 @@ enphase-data-stream/
    ```bash
    python -m venv venv
    venv\Scripts\activate  # Windows
+   source venv/bin/activate  # macOS/Linux
    ```
 
 3. **Install dependencies:**
@@ -110,15 +107,15 @@ enphase-data-stream/
    {
      "IsEncrypted": false,
      "Values": {
-       "FUNCTIONS_WORKER_RUNTIME": "python",
        "AzureWebJobsStorage": "UseDevelopmentStorage=true",
        "ENPHASE_API_KEY": "your_api_key",
        "ENPHASE_CLIENT_ID": "your_client_id",
        "ENPHASE_CLIENT_SECRET": "your_client_secret",
        "ENPHASE_SYSTEM_ID": "your_system_id",
        "ENPHASE_REFRESH_TOKEN": "your_refresh_token",
-       "EVENTHUB_CONNECTION_STRING": "your_connection_string",
-       "EVENTHUB_NAME": "your_eventhub_name",
+       "KUSTO_CLUSTER_URI": "https://your-cluster.z7.kusto.fabric.microsoft.com",
+       "KUSTO_DATABASE": "YourDatabase",
+       "SYSTEM_TIMEZONE": "America/Los_Angeles",
        "APPLICATIONINSIGHTS_CONNECTION_STRING": "your_app_insights_connection"
      }
    }
@@ -131,51 +128,65 @@ enphase-data-stream/
 
 ## Deployment
 
-Deploy to Azure using VS Code Azure Functions extension or Azure CLI:
+Deploy to Azure using the Azure Functions Core Tools:
 
 ```bash
-func azure functionapp publish <your-function-app-name>
+func azure functionapp publish EnphaseEnergyPolling --python
 ```
 
-## Data Format
+## Data Schema
 
-The function sends JSON events to Eventstream for each telemetry type:
+The function ingests data into a unified `SolarTelemetry` table:
 
-```json
-{
-  "telemetry_type": "production",
-  "system_id": 5706934,
-  "retrieved_at": "2025-12-25T11:34:00.647998Z",
-  "end_at": 1766657700,
-  "devices_reporting": 1,
-  "wh_del": 447
-}
-```
-
-Data is stored in the `HaleJoliSolarRaw` table in Fabric Eventhouse and can be queried using KQL.
+| Column | Type | Description |
+|--------|------|-------------|
+| `Timestamp` | datetime | Reading timestamp (UTC) |
+| `LocalTime` | datetime | Reading timestamp (local timezone) |
+| `ProductionWh` | real | Solar production (Wh) |
+| `ProductionW` | real | Solar production power (W) |
+| `ConsumptionWh` | real | Home consumption (Wh) |
+| `ConsumptionW` | real | Home consumption power (W) |
+| `BatteryPercent` | real | Battery state of charge (%) |
+| `BatteryPowerW` | real | Battery power flow (W, positive=charging) |
+| `GridImportWh` | real | Energy imported from grid (Wh) |
+| `GridExportWh` | real | Energy exported to grid (Wh) |
+| `SystemId` | string | Enphase system identifier |
 
 ## Querying Data in Fabric
 
 ```kql
-// Get latest production readings
-HaleJoliSolarRaw
-| where telemetry_type == "production"
-| order by end_at desc
+// Get latest readings
+SolarTelemetry
+| order by Timestamp desc
 | take 10
 
-// Daily production summary
-HaleJoliSolarRaw
-| where telemetry_type == "production"
-| summarize TotalWh = sum(wh_del) by bin(todatetime(end_at * 1s), 1d)
+// Daily energy summary
+SolarTelemetry
+| summarize 
+    TotalProduction = sum(ProductionWh),
+    TotalConsumption = sum(ConsumptionWh),
+    TotalImport = sum(GridImportWh),
+    TotalExport = sum(GridExportWh)
+  by bin(LocalTime, 1d)
+
+// Battery usage patterns
+SolarTelemetry
+| where BatteryPercent > 0
+| summarize AvgCharge = avg(BatteryPercent) by bin(LocalTime, 1h)
+| render timechart
 ```
 
 ## Monitoring
 
 The function integrates with Application Insights for:
-- Request tracing
-- Dependency tracking (API calls, Event Hub sends)
-- Custom metrics and dimensions
-- Error logging with context
+- **Request tracing** - Each function invocation is tracked
+- **Dependency tracking** - API calls to Enphase and Kusto are traced
+- **Custom dimensions** - Duration, record counts, and system ID
+- **Error logging** - Exceptions with full context
+
+View logs in Azure Portal:
+- **Function App → Application Insights → Live Metrics** for real-time data
+- **Application Insights → Transaction search** to find specific executions
 
 ## Enphase API Setup
 
@@ -186,10 +197,17 @@ The function integrates with Application Insights for:
 
 ## Microsoft Fabric Setup
 
-1. Create an Eventstream in your Fabric workspace
-2. Configure a "Custom App" source to get Event Hub credentials
-3. Create an Eventhouse with a KQL database
-4. Connect Eventstream to Eventhouse as a destination
+1. Create an Eventhouse in your Fabric workspace
+2. Create a KQL database
+3. Grant the Function App's Managed Identity access to the database
+4. Note the cluster URI from the Eventhouse overview page
+
+### Grant Managed Identity Access
+
+In your Kusto database, run:
+```kql
+.add database ['YourDatabase'] ingestors ('aadapp=<function-app-managed-identity-id>')
+```
 
 ## License
 
@@ -199,4 +217,4 @@ MIT License
 
 - **Enphase API:** [Enphase Developer Support](https://developer-v4.enphase.com/)
 - **Microsoft Fabric:** [Microsoft Fabric Documentation](https://learn.microsoft.com/fabric/)
-- **This application:** Open an issue in this repository
+- **Azure Functions:** [Azure Functions Python Guide](https://learn.microsoft.com/azure/azure-functions/functions-reference-python)
