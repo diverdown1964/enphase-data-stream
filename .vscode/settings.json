@@ -12,5 +12,12 @@
   "azureFunctions.projectRuntime": "~4",
   "azureFunctions.projectLanguageModel": 2,
   "python.terminal.useEnvFile": true,
-  "python.envFile": "${workspaceFolder}/.env"
+  "python.envFile": "${workspaceFolder}/.env",
+  "python-envs.pythonProjects": [
+    {
+      "path": "",
+      "envManager": "ms-python.python:system",
+      "packageManager": "ms-python.python:pip"
+    }
+  ]
 }
