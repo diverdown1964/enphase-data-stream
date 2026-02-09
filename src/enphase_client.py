@@ -496,12 +496,15 @@ class EnphaseClient:
             logger.error(f"Failed to retrieve latest telemetry: {e}")
             raise
     
-    def get_system_summary(self) -> Dict:
+    def get_system_summary(self, summary_date: str = None) -> Dict:
         """
-        Get system summary including current status
+        Get system summary including current status using v4 API
+        
+        Args:
+            summary_date: Optional date string (YYYY-MM-DD) to get lifetime energy values up to that date
         
         Returns:
-            Dictionary containing system summary
+            Dictionary containing system summary (includes NMI, EVSE charge/discharge power in v4)
         """
         token = self._get_access_token()
         
@@ -513,11 +516,15 @@ class EnphaseClient:
         if self.api_key:
             headers["key"] = self.api_key
         
-        # Use v2 API endpoint
-        endpoint = f"{self.base_url_v2}/systems/{self.system_id}/summary"
+        # Use v4 API endpoint (migrated from v2)
+        endpoint = f"{self.base_url}/systems/{self.system_id}/summary"
+        
+        params = {}
+        if summary_date:
+            params['summary_date'] = summary_date
         
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(endpoint, headers=headers, params=params if params else None)
             response.raise_for_status()
             
             data = response.json()

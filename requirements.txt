@@ -25,5 +25,8 @@ azure-kusto-data>=4.0.0
 azure-kusto-ingest>=4.0.0
 azure-identity>=1.14.0
 
+# Azure Blob Storage for persisting OAuth refresh tokens
+azure-storage-blob>=12.19.0
+
 # Timezone data for Windows (required for zoneinfo)
 tzdata>=2024.1

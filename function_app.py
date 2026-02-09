@@ -16,6 +16,7 @@ import requests
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
 from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure.trace_exporter import AzureExporter
 from opencensus.trace import config_integration
@@ -54,11 +55,82 @@ def get_logger():
     return logger
 
 
+class TokenStore:
+    """Persist OAuth tokens to Azure Blob Storage so refreshed tokens survive across executions.
+    
+    Enphase refresh tokens expire after 1 month, but each refresh returns a new token.
+    By persisting the latest token, the function can keep itself authorized indefinitely.
+    """
+    
+    CONTAINER_NAME = "enphase-tokens"
+    BLOB_NAME = "oauth-tokens.json"
+    
+    def __init__(self, connection_string: str = None, logger=None):
+        self.logger = logger or logging.getLogger(__name__)
+        conn_str = connection_string or os.environ.get("AzureWebJobsStorage")
+        self._blob_service = None
+        if conn_str:
+            try:
+                self._blob_service = BlobServiceClient.from_connection_string(conn_str)
+                self._ensure_container()
+            except Exception as e:
+                self.logger.warning(f"TokenStore init failed, will use env var only: {e}")
+                self._blob_service = None
+        else:
+            self.logger.warning("No AzureWebJobsStorage connection string - token persistence disabled")
+    
+    def _ensure_container(self):
+        """Create the blob container if it doesn't exist"""
+        try:
+            self._blob_service.create_container(self.CONTAINER_NAME)
+        except Exception:
+            pass  # Container already exists
+    
+    def get_refresh_token(self) -> Optional[str]:
+        """Read the latest refresh token from blob storage"""
+        if not self._blob_service:
+            return None
+        try:
+            blob_client = self._blob_service.get_blob_client(self.CONTAINER_NAME, self.BLOB_NAME)
+            data = json.loads(blob_client.download_blob().readall())
+            token = data.get("refresh_token")
+            if token:
+                self.logger.info("Loaded refresh token from blob storage", extra={
+                    'custom_dimensions': {'source': 'blob_storage', 'updated_at': data.get('updated_at')}
+                })
+            return token
+        except Exception as e:
+            self.logger.info(f"No stored refresh token found, will use env var: {e}")
+            return None
+    
+    def save_refresh_token(self, refresh_token: str):
+        """Persist the latest refresh token to blob storage"""
+        if not self._blob_service:
+            return
+        try:
+            blob_client = self._blob_service.get_blob_client(self.CONTAINER_NAME, self.BLOB_NAME)
+            data = {
+                "refresh_token": refresh_token,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            blob_client.upload_blob(json.dumps(data), overwrite=True)
+            self.logger.info("Saved new refresh token to blob storage", extra={
+                'custom_dimensions': {'operation': 'save_token'}
+            })
+        except Exception as e:
+            self.logger.error(f"Failed to save refresh token to blob storage: {e}", extra={
+                'custom_dimensions': {'error': str(e)}
+            })
+
+
 class EnphaseClient:
     """Client for interacting with Enphase Energy API v4"""
     
+    MAX_CALLS_PER_MINUTE = 10
+    
     def __init__(self, api_key: str, client_id: str, client_secret: str, 
-                 system_id: str, refresh_token: str, logger=None, tracer=None):
+                 system_id: str, refresh_token: str, logger=None, tracer=None,
+                 token_store: TokenStore = None):
         self.api_key = api_key
         self.client_id = client_id
         self.client_secret = client_secret
@@ -67,6 +139,25 @@ class EnphaseClient:
         self.access_token = None
         self.logger = logger or logging.getLogger(__name__)
         self.tracer = tracer
+        self.token_store = token_store
+        self._call_timestamps: List[float] = []
+    
+    def _throttle(self):
+        """Enforce rate limit of MAX_CALLS_PER_MINUTE API calls per 60-second window"""
+        now = time.time()
+        # Remove timestamps older than 60 seconds
+        self._call_timestamps = [t for t in self._call_timestamps if now - t < 60]
+        
+        if len(self._call_timestamps) >= self.MAX_CALLS_PER_MINUTE:
+            oldest = self._call_timestamps[0]
+            wait_time = 60 - (now - oldest) + 0.5  # +0.5s safety margin
+            if wait_time > 0:
+                self.logger.info(f"Rate limit: waiting {wait_time:.1f}s before next API call", extra={
+                    'custom_dimensions': {'wait_seconds': round(wait_time, 1), 'calls_in_window': len(self._call_timestamps)}
+                })
+                time.sleep(wait_time)
+        
+        self._call_timestamps.append(time.time())
         
     def _refresh_access_token(self):
         """Get new access token using refresh token"""
@@ -84,14 +175,19 @@ class EnphaseClient:
             data = response.json()
             self.access_token = data["access_token"]
             if "refresh_token" in data:
-                self.refresh_token = data["refresh_token"]
+                new_refresh = data["refresh_token"]
+                self.refresh_token = new_refresh
+                # Persist the new refresh token so the next execution uses it
+                if self.token_store:
+                    self.token_store.save_refresh_token(new_refresh)
             
             duration_ms = (time.time() - start_time) * 1000
             self.logger.info("Token refreshed successfully", extra={
                 'custom_dimensions': {
                     'operation': 'token_refresh',
                     'duration_ms': duration_ms,
-                    'system_id': self.system_id
+                    'system_id': self.system_id,
+                    'token_rotated': 'refresh_token' in data
                 }
             })
             return self.access_token
@@ -116,11 +212,12 @@ class EnphaseClient:
         }
     
     def _make_request(self, endpoint: str, params: dict = None) -> dict:
-        """Make authenticated request with retry on 401"""
+        """Make authenticated request with retry on 401 and rate limiting"""
         url = f"{ENPHASE_BASE_URL}/systems/{self.system_id}/{endpoint}"
         start_time = time.time()
         
         for attempt in range(2):
+            self._throttle()
             response = requests.get(url, headers=self._get_headers(), params=params)
             if response.status_code == 401 and attempt == 0:
                 self.logger.info("Token expired, refreshing...", extra={
@@ -207,6 +304,29 @@ class EnphaseClient:
         if end_at:
             params["end_at"] = end_at
         data = self._make_request("energy_export_telemetry", params)
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
+    
+    def get_events(self, start_at: int = None, end_at: int = None) -> dict:
+        """Get system events (active and closed) for a time period (max 7 days)"""
+        params = {}
+        if start_at:
+            params["start_at"] = start_at
+        if end_at:
+            params["end_at"] = end_at
+        data = self._make_request("events", params)
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
+    
+    def get_open_events(self) -> dict:
+        """Get all currently open events for the system"""
+        data = self._make_request("open_events")
+        data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
+        return data
+    
+    def get_latest_telemetry(self) -> dict:
+        """Get latest real-time telemetry snapshot (includes battery mode)"""
+        data = self._make_request("latest_telemetry")
         data['retrieved_at'] = datetime.now(timezone.utc).isoformat()
         return data
 
@@ -307,9 +427,10 @@ class FabricKustoClient:
             battery_devices = interval.get('battery_devices', 0)
             grid_import_wh = interval.get('grid_import_wh', 0.0)
             grid_export_wh = interval.get('grid_export_wh', 0.0)
+            battery_mode = interval.get('battery_mode', '')
             
             command = f""".ingest inline into table SolarTelemetry <|
-{system_id},{end_at},{reading_time.isoformat() if reading_time else ''},{retrieved_at.isoformat()},{production_wh},{production_devices},{consumption_wh},{consumption_devices},{battery_charge_wh},{battery_discharge_wh},{battery_soc_percent},{battery_devices},{grid_import_wh},{grid_export_wh},{reading_time_local.isoformat() if reading_time_local else ''}"""
+{system_id},{end_at},{reading_time.isoformat() if reading_time else ''},{retrieved_at.isoformat()},{production_wh},{production_devices},{consumption_wh},{consumption_devices},{battery_charge_wh},{battery_discharge_wh},{battery_soc_percent},{battery_devices},{grid_import_wh},{grid_export_wh},{reading_time_local.isoformat() if reading_time_local else ''},{battery_mode}"""
             
             try:
                 client.execute(self.database, command)
@@ -318,6 +439,43 @@ class FabricKustoClient:
                 self.logger.error(f"Failed to ingest telemetry row: {e}")
         
         self.logger.info(f"Ingested {ingested} unified telemetry rows")
+        return ingested
+    
+    def ingest_events(self, system_id: int, events: List[Dict], retrieved_at: datetime) -> int:
+        """Ingest events into the SolarEvents table"""
+        client = self._get_client()
+        ingested = 0
+        
+        for event in events:
+            event_id = event.get('event_id', 0)
+            event_type_id = event.get('event_type_id', 0)
+            event_type_key = event.get('event_type_key', '')
+            event_description = event.get('event_description', '')
+            severity = event.get('severity', '')
+            
+            started_at_epoch = event.get('started_at')
+            ended_at_epoch = event.get('ended_at')
+            started_at = datetime.utcfromtimestamp(started_at_epoch).isoformat() if started_at_epoch else ''
+            ended_at = datetime.utcfromtimestamp(ended_at_epoch).isoformat() if ended_at_epoch else ''
+            is_active = str(event.get('is_active', False)).lower()
+            device_serial = event.get('device_serial', '')
+            
+            # Escape any commas in text fields
+            event_type_key = event_type_key.replace(',', ' ')
+            event_description = event_description.replace(',', ' ')
+            severity = severity.replace(',', ' ')
+            device_serial = device_serial.replace(',', ' ')
+            
+            command = f""".ingest inline into table SolarEvents <|
+{system_id},{event_id},{event_type_id},{event_type_key},{event_description},{severity},{started_at},{ended_at},{is_active},{device_serial},{retrieved_at.isoformat()}"""
+            
+            try:
+                client.execute(self.database, command)
+                ingested += 1
+            except KustoServiceError as e:
+                self.logger.error(f"Failed to ingest event row: {e}")
+        
+        self.logger.info(f"Ingested {ingested} events")
         return ingested
     
     def close(self):
@@ -348,6 +506,7 @@ def merge_intervals(all_data: Dict[str, Dict]) -> List[Dict]:
         'battery_devices': 0,
         'grid_import_wh': 0.0,
         'grid_export_wh': 0.0,
+        'battery_mode': '',
     })
     
     # Process production
@@ -463,6 +622,19 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
         kusto_client = None
         
         try:
+            # Initialize token store and prefer persisted token over env var
+            token_store = TokenStore(logger=logger)
+            stored_token = token_store.get_refresh_token()
+            if stored_token:
+                refresh_token = stored_token
+                logger.info("Using persisted refresh token from blob storage", extra={
+                    'custom_dimensions': {'invocation_id': invocation_id, 'token_source': 'blob_storage'}
+                })
+            else:
+                logger.info("Using refresh token from environment variable", extra={
+                    'custom_dimensions': {'invocation_id': invocation_id, 'token_source': 'env_var'}
+                })
+            
             # Initialize clients
             enphase_client = EnphaseClient(
                 api_key=api_key,
@@ -471,7 +643,8 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                 system_id=system_id,
                 refresh_token=refresh_token,
                 logger=logger,
-                tracer=tracer
+                tracer=tracer,
+                token_store=token_store
             )
             
             kusto_client = FabricKustoClient(
@@ -493,10 +666,24 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             # Determine date range for fetch
             # If we have existing data, fetch from latest timestamp to now
             # API returns ~96 intervals (~24 hours) per request
+            # Cap to 1 day max - use the backfill endpoint for larger gaps
             start_at = None
             end_at = int(datetime.now(timezone.utc).timestamp())
             if latest_end_at:
-                start_at = latest_end_at
+                max_lookback = int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp())
+                start_at = max(latest_end_at, max_lookback)
+                
+                if latest_end_at < max_lookback:
+                    gap_days = (datetime.utcfromtimestamp(max_lookback) - datetime.utcfromtimestamp(latest_end_at)).days
+                    logger.warning(f"Data gap detected: {gap_days} days. Use /api/backfill?days={gap_days} to recover.", extra={
+                        'custom_dimensions': {
+                            'gap_days': gap_days,
+                            'latest_end_at': latest_end_at,
+                            'capped_start_at': max_lookback,
+                            'invocation_id': invocation_id
+                        }
+                    })
+                
                 logger.info(f"Fetching from {datetime.utcfromtimestamp(start_at)} to {datetime.utcfromtimestamp(end_at)}", extra={
                     'custom_dimensions': {'start_at': start_at, 'end_at': end_at, 'invocation_id': invocation_id}
                 })
@@ -511,6 +698,25 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
                     'export': enphase_client.get_export_data(start_at=start_at, end_at=end_at),
                 }
             
+            # Fetch latest telemetry for battery mode
+            battery_mode = ''
+            try:
+                with tracer.span(name="fetch_latest_telemetry"):
+                    latest_telem = enphase_client.get_latest_telemetry()
+                    # Extract battery mode from the response
+                    battery_info = latest_telem.get('battery', {})
+                    if isinstance(battery_info, dict):
+                        battery_mode = battery_info.get('operational_mode', '')
+                    elif isinstance(latest_telem.get('battery_mode'), str):
+                        battery_mode = latest_telem.get('battery_mode', '')
+                    logger.info(f"Current battery mode: {battery_mode}", extra={
+                        'custom_dimensions': {'battery_mode': battery_mode, 'invocation_id': invocation_id}
+                    })
+            except Exception as e:
+                logger.warning(f"Could not fetch latest telemetry for battery mode: {e}", extra={
+                    'custom_dimensions': {'error': str(e), 'invocation_id': invocation_id}
+                })
+            
             # Log what we got
             for ttype, data in all_data.items():
                 intervals = data.get('intervals', [])
@@ -523,6 +729,11 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             # Merge by end_at
             with tracer.span(name="merge_intervals"):
                 merged = merge_intervals(all_data)
+            
+            # Stamp battery_mode onto all merged intervals
+            if battery_mode:
+                for interval in merged:
+                    interval['battery_mode'] = battery_mode
             
             logger.info(f"Merged into {len(merged)} unified intervals", extra={
                 'custom_dimensions': {'merged_count': len(merged), 'invocation_id': invocation_id}
@@ -554,6 +765,36 @@ def enphase_poller(myTimer: func.TimerRequest) -> None:
             else:
                 logger.info("No new intervals to ingest", extra={
                     'custom_dimensions': {'invocation_id': invocation_id}
+                })
+            
+            # Fetch and ingest events/alarms
+            try:
+                with tracer.span(name="fetch_and_ingest_events"):
+                    # Use last 7 days for events (API max window)
+                    events_start = int((datetime.now(timezone.utc) - timedelta(days=7)).timestamp())
+                    events_end = int(datetime.now(timezone.utc).timestamp())
+                    
+                    events_data = enphase_client.get_events(start_at=events_start, end_at=events_end)
+                    events_list = events_data.get('events', [])
+                    
+                    if events_list:
+                        events_ingested = kusto_client.ingest_events(
+                            system_id_int, events_list, retrieved_at
+                        )
+                        logger.info(f"Ingested {events_ingested} events", extra={
+                            'custom_dimensions': {
+                                'events_ingested': events_ingested,
+                                'invocation_id': invocation_id
+                            }
+                        })
+                    else:
+                        logger.info("No events to ingest", extra={
+                            'custom_dimensions': {'invocation_id': invocation_id}
+                        })
+            except Exception as e:
+                # Events ingestion is non-critical - don't fail the whole run
+                logger.warning(f"Could not fetch/ingest events: {e}", extra={
+                    'custom_dimensions': {'error': str(e), 'invocation_id': invocation_id}
                 })
                 
         except Exception as e:
@@ -647,6 +888,13 @@ def backfill(req: func.HttpRequest) -> func.HttpResponse:
         errors = []
         
         try:
+            # Initialize token store and prefer persisted token over env var
+            token_store = TokenStore(logger=logger)
+            stored_token = token_store.get_refresh_token()
+            if stored_token:
+                refresh_token = stored_token
+                logger.info("Backfill using persisted refresh token from blob storage")
+            
             enphase_client = EnphaseClient(
                 api_key=api_key,
                 client_id=client_id,
@@ -654,7 +902,8 @@ def backfill(req: func.HttpRequest) -> func.HttpResponse:
                 system_id=system_id,
                 refresh_token=refresh_token,
                 logger=logger,
-                tracer=tracer
+                tracer=tracer,
+                token_store=token_store
             )
             
             kusto_client = FabricKustoClient(
@@ -708,17 +957,13 @@ def backfill(req: func.HttpRequest) -> func.HttpResponse:
                             })
                     
                     days_processed += 1
-                    
-                    # Rate limiting delay
-                    if day_offset > 1:
-                        time.sleep(delay)
                         
                 except Exception as e:
                     error_msg = f"Error fetching {day_start.date()}: {str(e)}"
                     errors.append(error_msg)
                     logger.error(error_msg, extra={'custom_dimensions': {'date': str(day_start.date())}})
-                    # Extra delay on error (rate limiting)
-                    time.sleep(delay * 3)
+                    # Extra delay on error
+                    time.sleep(10)
             
             execution_duration_ms = (time.time() - execution_start) * 1000
             
