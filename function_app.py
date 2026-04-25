@@ -562,10 +562,10 @@ def merge_intervals(all_data: Dict[str, Dict]) -> List[Dict]:
     return [merged[end_at] for end_at in sorted(merged.keys())]
 
 
-@app.timer_trigger(schedule="0 0 */4 * * *", arg_name="myTimer", run_on_startup=False,
+@app.timer_trigger(schedule="0 0 */6 * * *", arg_name="myTimer", run_on_startup=False,
                    use_monitor=True)
 def enphase_poller(myTimer: func.TimerRequest) -> None:
-    """Timer-triggered function to poll Enphase and write to Kusto (every 4 hours)"""
+    """Timer-triggered function to poll Enphase and write to Kusto (every 6 hours)"""
     
     logger = get_logger()
     tracer = get_tracer()

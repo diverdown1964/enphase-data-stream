@@ -70,7 +70,7 @@ class EnphaseDataStreamer:
         )
         
         # Polling interval (in seconds)
-        self.poll_interval = int(os.getenv("POLL_INTERVAL", 14400))
+        self.poll_interval = int(os.getenv("POLL_INTERVAL", 21600))
         
         logger.info("Enphase Data Streamer initialized")
         logger.info(f"Polling interval: {self.poll_interval} seconds ({self.poll_interval/3600:.1f} hours)")
