@@ -1,6 +1,6 @@
 # Retiring the Enphase polling function
 
-Status: **phases 1 to 4 done 2026-11-12** (timer disabled, cutover pinned to 2026-11-11T23:45:00Z, HaleJoliSolar model repointed to `Gold_SolarTelemetryUnified()` and refreshed, Enphase credentials rotated by John, resource group `enphaseenergypolling` deleted). Phases 5 and 6 not started.
+Status: **all six phases done 2026-11-12** (timer disabled, cutover pinned to 2026-11-11T23:45:00Z, HaleJoliSolar model repointed to `Gold_SolarTelemetryUnified()` and refreshed, Enphase credentials rotated by John, resource group `enphaseenergypolling` deleted, repo committed and archived, SolarEvents dropped).
 
 ## Why
 
@@ -76,7 +76,7 @@ This removes all seven resources, including the blob container holding the persi
 token. Do this only after phase 3, so the deleted token is already dead. Rollback after this point
 means redeploying from the repo with `func azure functionapp publish` and re-entering settings.
 
-### Phase 5: repository
+### Phase 5: repository — DONE 2026-11-12 (committed 3ef0e56 on master, .tokens.json untracked, history left as is since the tokens were rotated, repo archived)
 
 1. Commit `kql/` and this file.
 2. Add a retirement note to the top of `README.md` pointing at `kql/` and the unified function.
@@ -84,7 +84,7 @@ means redeploying from the repo with `func azure functionapp publish` and re-ent
    force-push, or accept that the tokens are dead after phase 3 and leave history alone.
 4. Archive the repository on GitHub.
 
-### Phase 6: tidy Fabric
+### Phase 6: tidy Fabric — DONE 2026-11-12
 
 ```kusto
 .drop table SolarEvents ifexists
