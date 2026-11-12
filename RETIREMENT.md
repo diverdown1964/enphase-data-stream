@@ -56,7 +56,9 @@ The `HaleJoliSolar` model imports from the Kusto cluster. Its `Solar Telemetry` 
 queries `Gold_SolarTelemetryUnified()` instead of the `SolarTelemetry` table, with the same
 projected columns (the unified function also carries `production_devices`, `consumption_devices`
 and `battery_devices` so the model's columns are unchanged). A full refresh on F4 took 11 seconds.
-Not yet surfaced in the model: `battery_mode`, `battery_status`, `consumption_ct_wh`, `source`.
+Later on 2026-11-12 the model also gained `BatteryMode`, `BatteryStatus`, `Source` and six
+per-interval peak-power columns (production, house, grid import/export, battery charge/discharge).
+Still not surfaced: `consumption_ct_wh`.
 If refreshes slow down as Silver_Solar grows, materialise the Gold output into a table on a
 schedule instead of querying the function live.
 
