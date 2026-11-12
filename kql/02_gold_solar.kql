@@ -75,6 +75,8 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
     };
     let mode = lastval("storage_mode") | project reading_time, battery_mode = s;
     let status = lastval("battery_status") | project reading_time, battery_status = s;
+    // Enpower grid status binary sensor: on = connected to the grid.
+    let grid = lastval("grid_status") | project reading_time, grid_status = case(s == "on", "On Grid", s == "off", "Off Grid", "");
     // Device counts, kept so the HaleJoliSolar model's columns survive the cutover:
     // production_devices from the Kona HA "Solar panels producing" sensor (forward-filled),
     // battery_devices = number of Encharge units seen, consumption_devices unknown on this side.
@@ -137,6 +139,7 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
     | join kind=leftouter soc on reading_time
     | join kind=leftouter mode on reading_time
     | join kind=leftouter status on reading_time
+    | join kind=leftouter grid on reading_time
     | join kind=leftouter panels on reading_time
     | join kind=leftouter prod_peak on reading_time
     | join kind=leftouter cons_peak on reading_time
@@ -166,6 +169,8 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
         production_kw_peak, consumption_kw_peak, grid_import_kw_peak, grid_export_kw_peak,
         battery_discharge_kw_peak, battery_charge_kw_peak,
         battery_energy_stored_kwh, battery_reserve_percent, battery_reserve_kwh,
+        panels_producing = production_devices,              // HA "Solar panels producing" sensor (microinverters reporting)
+        grid_status = coalesce(grid_status, ""),
         source = "home_assistant"
     | order by reading_time asc
 }
@@ -184,6 +189,7 @@ Gold_SolarTelemetryUnified(cutover: datetime = datetime(2026-11-11T23:45:00Z)) {
         grid_import_kw_peak = real(null), grid_export_kw_peak = real(null),
         battery_discharge_kw_peak = real(null), battery_charge_kw_peak = real(null),
         battery_energy_stored_kwh = real(null), battery_reserve_percent = real(null), battery_reserve_kwh = real(null),
+        panels_producing = int(null), grid_status = "",
         source = "enphase_api"
     | union (Gold_SolarIntervals(cutover))
     | order by reading_time asc
