@@ -1,3 +1,11 @@
+> **Retired 2026-11-12.** The Azure Function described below no longer exists. Solar data now
+> arrives from the Kona Home Assistant's Enphase Envoy integration into the Fabric Eventhouse
+> (`HaleJoli.Raw_HaleJoliAllSignals`) and is shaped by the scripts in [`kql/`](kql/):
+> `Silver_Solar` (update policy), `Gold_SolarIntervals()` (the same 15-minute grain as this
+> function's `SolarTelemetry` table) and `Gold_SolarTelemetryUnified()` (API history up to
+> 2026-11-11 23:45 UTC, Home Assistant-derived intervals after). See [RETIREMENT.md](RETIREMENT.md)
+> for what was removed and why. The `SolarTelemetry` table is kept as frozen history.
+
 # Enphase Solar Data to Microsoft Fabric
 
 An Azure Functions application that polls the Enphase Energy API for solar production data and ingests it directly into Microsoft Fabric Eventhouse (Kusto).

@@ -1,0 +1,108 @@
+// Silver_Solar: typed Enphase Envoy readings from the Kona Home Assistant feed.
+// Database: HaleJoli (Fabric Eventhouse). Source: Raw_HaleJoliAllSignals.
+// Units are normalised: energy -> kWh, power -> kW, apparent power -> kVA.
+// The Envoy lifetime sensors switched display unit MWh -> kWh on 2026-11-07,
+// so the raw unit is kept in raw_unit and numeric_value is always in the normalised unit.
+
+.create-merge table Silver_Solar (
+    timestamp: datetime,
+    entity_id: string,
+    friendly_name: string,
+    device: string,            // envoy | encharge | enpower | template
+    device_serial: string,
+    metric: string,            // see Transform_Solar for the vocabulary
+    device_class: string,
+    state_class: string,
+    state: string,
+    numeric_value: real,       // normalised value (kWh / kW / kVA / % / °C)
+    unit_of_measurement: string, // normalised unit
+    raw_unit: string,
+    attributes_json: dynamic
+)
+
+.create-or-alter function with (folder = "Silver/Transforms", docstring = "Enphase Envoy, Encharge and Enpower readings from Raw_HaleJoliAllSignals with normalised units")
+Transform_Solar() {
+    Raw_HaleJoliAllSignals
+    | where entity_id contains "envoy_" or entity_id contains "encharge_" or entity_id contains "enpower_" or entity_id contains "enphase_"
+        or entity_id in ("sensor.battery_status", "sensor.battery_power", "sensor.battery_charge_rate", "sensor.house_power", "sensor.solar_panels_producing")
+    | where entity_id !startswith "update."
+    | extend attrs = todynamic(attributes)
+    | extend raw_unit = tostring(attrs.unit_of_measurement)
+    | extend device = case(
+        entity_id contains "encharge_", "encharge",
+        entity_id contains "enpower_", "enpower",
+        entity_id contains "envoy_" or entity_id contains "enphase_", "envoy",
+        "template")
+    | extend device_serial = extract(@"(?:envoy|encharge|enpower)_(\d+)", 1, entity_id)
+    | extend metric = case(
+        // Envoy system-level power (kW)
+        entity_id endswith "_current_power_production", "production_power",
+        entity_id endswith "_production_ct_power", "production_power_meter",
+        entity_id endswith "_current_power_consumption", "consumption_power",
+        entity_id endswith "_current_net_power_consumption", "grid_power",          // positive = import
+        entity_id endswith "_current_battery_discharge", "battery_power",           // positive = discharging
+        // Envoy lifetime energy counters (kWh, total_increasing)
+        entity_id endswith "_lifetime_energy_production", "production_lifetime",
+        entity_id endswith "_lifetime_energy_consumption", "consumption_lifetime",
+        entity_id endswith "_lifetime_net_energy_consumption", "grid_import_lifetime",
+        entity_id endswith "_lifetime_net_energy_production", "grid_export_lifetime",
+        entity_id endswith "_lifetime_battery_energy_charged", "battery_charged_lifetime",
+        entity_id endswith "_lifetime_battery_energy_discharged", "battery_discharged_lifetime",
+        entity_id endswith "_production_ct_energy_delivered", "production_meter_lifetime",
+        entity_id endswith "_production_ct_energy_received", "production_meter_received_lifetime",
+        // Envoy battery system
+        entity_id endswith "_available_battery_energy", "battery_energy_stored",
+        entity_id endswith "_battery_capacity", "battery_capacity",
+        entity_id endswith "_reserve_battery_energy", "battery_reserve_energy",
+        entity_id endswith "_reserve_battery_level", "battery_reserve_level",
+        entity_id startswith "sensor.envoy_" and entity_id endswith "_battery", "battery_soc",
+        // Encharge per-battery
+        entity_id startswith "sensor.encharge_" and entity_id endswith "_battery", "encharge_soc",
+        entity_id startswith "sensor.encharge_" and entity_id endswith "_apparent_power", "encharge_apparent_power",
+        entity_id startswith "sensor.encharge_" and entity_id endswith "_power", "encharge_power",
+        entity_id startswith "sensor.encharge_" and entity_id endswith "_temperature", "encharge_temperature",
+        entity_id startswith "sensor.encharge_" and entity_id endswith "_last_reported", "encharge_last_reported",
+        entity_id startswith "binary_sensor.encharge_" and entity_id endswith "_communicating", "encharge_communicating",
+        entity_id startswith "binary_sensor.encharge_" and entity_id endswith "_dc_switch", "encharge_dc_switch",
+        // Enpower / grid
+        entity_id endswith "_grid_status", "grid_status",
+        entity_id endswith "_charge_from_grid", "charge_from_grid",
+        entity_id endswith "_grid_enabled", "grid_enabled",
+        entity_id endswith "_storage_mode", "storage_mode",                      // self_consumption | backup | savings
+        entity_id startswith "sensor.enpower_" and entity_id endswith "_temperature", "enpower_temperature",
+        entity_id startswith "sensor.enpower_" and entity_id endswith "_last_reported", "enpower_last_reported",
+        entity_id startswith "binary_sensor.enpower_" and entity_id endswith "_communicating", "enpower_communicating",
+        entity_id contains "relay", "dry_contact",
+        entity_id contains "cutoff_battery_level" or entity_id contains "restore_battery_level" or entity_id contains "grid_action", "dry_contact_config",
+        // Template sensors on the Kona HA
+        entity_id == "sensor.battery_status", "battery_status",
+        entity_id == "sensor.battery_power", "template_battery_power",
+        entity_id == "sensor.battery_charge_rate", "template_battery_charge_rate",
+        entity_id == "sensor.house_power", "template_house_power",
+        entity_id == "sensor.solar_panels_producing", "panels_producing",
+        "other")
+    | extend numeric_value = case(
+        raw_unit == "MWh", todouble(state) * 1000.0,
+        raw_unit == "Wh",  todouble(state) / 1000.0,
+        raw_unit == "W",   todouble(state) / 1000.0,
+        raw_unit == "VA",  todouble(state) / 1000.0,
+        todouble(state))
+    | extend unit_of_measurement = case(
+        raw_unit in ("MWh", "kWh", "Wh"), "kWh",
+        raw_unit in ("W", "kW"), "kW",
+        raw_unit in ("VA", "kVA"), "kVA",
+        raw_unit)
+    | project timestamp = todatetime(last_updated), entity_id,
+        friendly_name = tostring(attrs.friendly_name),
+        device, device_serial, metric,
+        device_class = tostring(attrs.device_class),
+        state_class = tostring(attrs.state_class),
+        state, numeric_value, unit_of_measurement, raw_unit,
+        attributes_json = attrs
+}
+
+// Feed Silver_Solar from every new ingest into the raw table (same pattern as the HomeAssistant database).
+.alter table Silver_Solar policy update @'[{"IsEnabled": true, "Source": "Raw_HaleJoliAllSignals", "Query": "Transform_Solar()", "IsTransactional": false, "PropagateIngestionProperties": true}]'
+
+// One-off backfill of raw rows that landed before the policy existed (policies only see new ingests).
+.set-or-append Silver_Solar <| Transform_Solar()

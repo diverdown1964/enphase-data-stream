@@ -1,0 +1,129 @@
+// Gold functions over Silver_Solar.
+// Gold_SolarIntervals reproduces the Azure Function's SolarTelemetry grain (15-minute interval
+// energy, end-of-interval timestamp) from the Envoy lifetime counters, so the function can be retired.
+// Gold_SolarTelemetryUnified stitches the function's history (before the HA feed existed) to it.
+//
+// Consumption: the Envoy consumption CT sits upstream of the battery, so Home Assistant's
+// "House consumed" counter = house load + battery charge - battery discharge. The Enphase API
+// (and SolarTelemetry) report house load, so consumption_wh = ct - charge + discharge.
+// Verified 2026-11-07..11: matches the API within rounding; the raw CT value is kept as consumption_ct_wh.
+// Grid import/export: HA counters are gross flows; the API nets within each 15-minute interval,
+// so HA import and export are each ~0.3 kWh/day higher while (import - export) agrees.
+
+.create-or-alter function with (folder = "Gold/Solar", docstring = "15-minute solar intervals derived from Envoy lifetime counters; same grain and columns as SolarTelemetry. consumption_wh is CT minus battery charge plus discharge (house load).")
+Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datetime = datetime(null)) {
+    let bin_size = 15m;
+    let end_t = iff(isnull(end_time), bin(now(), bin_size), end_time);
+    let start_t = bin(start_time, bin_size);
+    let tz = "Pacific/Honolulu";
+    let system_id = 5706934;
+    let counters = dynamic(["production_lifetime", "consumption_lifetime", "grid_import_lifetime",
+                            "grid_export_lifetime", "battery_charged_lifetime", "battery_discharged_lifetime"]);
+    // End-of-bin counter value per 15-minute bin, forward-filled across quiet bins, then differenced.
+    let deltas =
+        Silver_Solar
+        | where metric in (counters) and isnotnull(numeric_value)
+        | where timestamp between ((start_t - 1d) .. end_t)
+        | make-series v = max(numeric_value) default = real(null) on timestamp from (start_t - 1d) to end_t step bin_size by metric
+        | extend v = series_fill_forward(v)
+        | mv-expand timestamp to typeof(datetime), v to typeof(real)
+        | order by metric asc, timestamp asc
+        | serialize
+        | extend prev_v = prev(v, 1), prev_metric = prev(metric, 1)
+        | extend delta_kwh = iff(metric == prev_metric and isnotnull(prev_v) and isnotnull(v), v - prev_v, real(null))
+        | extend delta_kwh = iff(delta_kwh < 0, 0.0, delta_kwh)      // counter reset or restart: never negative
+        | extend reading_time = timestamp + bin_size                    // Enphase end_at semantics
+        | where reading_time > start_t
+        | summarize
+            production_wh        = sumif(delta_kwh * 1000.0, metric == "production_lifetime"),
+            consumption_ct_wh    = sumif(delta_kwh * 1000.0, metric == "consumption_lifetime"),
+            battery_charge_wh    = sumif(delta_kwh * 1000.0, metric == "battery_charged_lifetime"),
+            battery_discharge_wh = sumif(delta_kwh * 1000.0, metric == "battery_discharged_lifetime"),
+            grid_import_wh       = sumif(delta_kwh * 1000.0, metric == "grid_import_lifetime"),
+            grid_export_wh       = sumif(delta_kwh * 1000.0, metric == "grid_export_lifetime")
+          by reading_time;
+    // State of charge: end-of-bin value, forward-filled (the sensor only reports on change).
+    let soc =
+        Silver_Solar
+        | where metric == "battery_soc" and isnotnull(numeric_value)
+        | where timestamp between ((start_t - 1d) .. end_t)
+        | summarize arg_max(timestamp, numeric_value) by t = bin(timestamp, bin_size)
+        | make-series v = max(numeric_value) default = real(null) on t from (start_t - 1d) to end_t step bin_size
+        | extend v = series_fill_forward(v)
+        | mv-expand t to typeof(datetime), v to typeof(real)
+        | project reading_time = t + bin_size, battery_soc_percent = v;
+    // Battery mode (Enpower storage mode, the API's operational_mode) and status: last value seen
+    // in the bin, forward-filled because these change rarely.
+    let lastval = (m: string) {
+        let obs = Silver_Solar
+            | where metric == m and state !in ("unavailable", "unknown")
+            | where timestamp between ((start_t - 1d) .. end_t)
+            | project ts = timestamp, s = state, t = bin(timestamp, bin_size);
+        // Seed the window with the latest value seen before it, so the first bins are not blank.
+        let seed = Silver_Solar
+            | where metric == m and state !in ("unavailable", "unknown")
+            | where timestamp < (start_t - 1d)
+            | top 1 by timestamp desc
+            | project ts = timestamp, s = state, t = start_t - 1d;
+        let per_bin = union obs, seed | summarize arg_max(ts, s) by t | project t, s;
+        range t from (start_t - 1d) to end_t step bin_size
+        | join kind=leftouter per_bin on t
+        | project t, s = coalesce(s, "")
+        | order by t asc
+        | scan declare (filled: string = "") with (step x: true => filled = iff(isempty(s), x.filled, s);)
+        | project reading_time = t + bin_size, s = filled
+    };
+    let mode = lastval("storage_mode") | project reading_time, battery_mode = s;
+    let status = lastval("battery_status") | project reading_time, battery_status = s;
+    // Device counts, kept so the HaleJoliSolar model's columns survive the cutover:
+    // production_devices from the Kona HA "Solar panels producing" sensor (forward-filled),
+    // battery_devices = number of Encharge units seen, consumption_devices unknown on this side.
+    let panels =
+        Silver_Solar
+        | where metric == "panels_producing" and isnotnull(numeric_value)
+        | where timestamp between ((start_t - 1d) .. end_t)
+        | summarize arg_max(timestamp, numeric_value) by t = bin(timestamp, bin_size)
+        | make-series v = max(numeric_value) default = real(null) on t from (start_t - 1d) to end_t step bin_size
+        | extend v = series_fill_forward(v)
+        | mv-expand t to typeof(datetime), v to typeof(real)
+        | project reading_time = t + bin_size, production_devices = toint(v);
+    let battery_units = toint(toscalar(Silver_Solar | where metric == "encharge_soc" | summarize dcount(device_serial)));
+    deltas
+    | join kind=leftouter soc on reading_time
+    | join kind=leftouter mode on reading_time
+    | join kind=leftouter status on reading_time
+    | join kind=leftouter panels on reading_time
+    | extend consumption_devices = int(null), battery_devices = battery_units
+    | project system_id = toint(system_id),               // int, to match SolarTelemetry in the union
+        end_at = tolong(datetime_diff("second", reading_time, datetime(1970-01-01))),
+        reading_time,
+        reading_time_local = datetime_utc_to_local(reading_time, tz),
+        production_wh = round(production_wh, 1),
+        consumption_wh = round(consumption_ct_wh - battery_charge_wh + battery_discharge_wh, 1),
+        battery_charge_wh = round(battery_charge_wh, 1),
+        battery_discharge_wh = round(battery_discharge_wh, 1),
+        battery_soc_percent,
+        grid_import_wh = round(grid_import_wh, 1),
+        grid_export_wh = round(grid_export_wh, 1),
+        battery_mode = coalesce(battery_mode, ""),
+        battery_status = coalesce(battery_status, ""),
+        consumption_ct_wh = round(consumption_ct_wh, 1),
+        production_devices, consumption_devices, battery_devices,
+        source = "home_assistant"
+    | order by reading_time asc
+}
+
+.create-or-alter function with (folder = "Gold/Solar", docstring = "SolarTelemetry history from the Enphase API before the cutover, Home Assistant-derived intervals after it")
+// Cutover pinned to the last row the Azure Function wrote before its timer was disabled on 2026-11-12.
+Gold_SolarTelemetryUnified(cutover: datetime = datetime(2026-11-11T23:45:00Z)) {
+    SolarTelemetry
+    | where reading_time <= cutover          // inclusive: the HA side starts strictly after the cutover
+    | project system_id, end_at, reading_time, reading_time_local,
+        production_wh, consumption_wh, battery_charge_wh, battery_discharge_wh,
+        battery_soc_percent, grid_import_wh, grid_export_wh, battery_mode,
+        battery_status = "", consumption_ct_wh = real(null),
+        production_devices, consumption_devices, battery_devices,
+        source = "enphase_api"
+    | union (Gold_SolarIntervals(cutover))
+    | order by reading_time asc
+}
