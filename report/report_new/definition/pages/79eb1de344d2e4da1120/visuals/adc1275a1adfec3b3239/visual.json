@@ -1,0 +1,213 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+  "name": "adc1275a1adfec3b3239",
+  "position": {
+    "x": 796,
+    "y": 184,
+    "z": 12000,
+    "height": 284,
+    "width": 468,
+    "tabOrder": 12000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Dates"
+                    }
+                  },
+                  "Property": "Date"
+                }
+              },
+              "queryRef": "Dates.Date",
+              "nativeQueryRef": "Day",
+              "displayName": "Day",
+              "format": "d MMM yyyy"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Production kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Production kWh",
+              "nativeQueryRef": "Solar kWh",
+              "displayName": "Solar kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Consumption kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Consumption kWh",
+              "nativeQueryRef": "Used kWh",
+              "displayName": "Used kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Grid Import kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Grid Import kWh",
+              "nativeQueryRef": "Grid kWh",
+              "displayName": "Grid kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Self-Sufficiency Rate"
+                }
+              },
+              "queryRef": "Solar Telemetry.Self-Sufficiency Rate",
+              "nativeQueryRef": "Self-powered",
+              "displayName": "Self-powered"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "Solar Telemetry"
+                  }
+                },
+                "Property": "Production kWh"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "columnHeaders": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "grid": [
+        {
+          "properties": {
+            "gridVertical": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            },
+            "rowPadding": {
+              "expr": {
+                "Literal": {
+                  "Value": "3L"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "visualContainerObjects": {
+      "stylePreset": [
+        {
+          "properties": {
+            "name": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Minimal'"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Best solar days'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

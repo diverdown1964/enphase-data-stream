@@ -176,8 +176,11 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
 }
 
 .create-or-alter function with (folder = "Gold/Solar", docstring = "SolarTelemetry history from the Enphase API before the cutover, Home Assistant-derived intervals after it")
-// Cutover pinned to the last row the Azure Function wrote before its timer was disabled on 2026-11-12.
-Gold_SolarTelemetryUnified(cutover: datetime = datetime(2026-11-11T23:45:00Z)) {
+// Cutover: 2026-11-07T00:00Z (2pm on 6 Nov in Hawaii), the first full day of the Home Assistant feed.
+// The Azure Function kept writing API rows until 2026-11-11T23:45Z; those overlap rows stay in
+// SolarTelemetry but are not used, because the Home Assistant side carries the extra signals
+// (peaks, battery status, stored energy, panels, grid status) and matched the API within rounding.
+Gold_SolarTelemetryUnified(cutover: datetime = datetime(2026-11-07T00:00:00Z)) {
     SolarTelemetry
     | where reading_time <= cutover          // inclusive: the HA side starts strictly after the cutover
     | project system_id, end_at, reading_time, reading_time_local,

@@ -40,3 +40,10 @@ local.settings.json
 .tokens.json
 
 .python_packages
+
+# Report generator: keep its build/ and lib/ despite the Python rules above
+!report/build/
+!report/lib/
+report/export_new/
+report/*-preview.png
+report/**/__pycache__/

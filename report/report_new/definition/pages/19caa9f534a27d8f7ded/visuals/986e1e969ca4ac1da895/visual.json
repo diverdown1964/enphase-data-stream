@@ -1,0 +1,242 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+  "name": "986e1e969ca4ac1da895",
+  "position": {
+    "x": 648,
+    "y": 456,
+    "z": 14000,
+    "height": 248,
+    "width": 616,
+    "tabOrder": 14000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Dates"
+                    }
+                  },
+                  "Property": "Year-Month"
+                }
+              },
+              "queryRef": "Dates.Year-Month",
+              "nativeQueryRef": "Month",
+              "displayName": "Month"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Production kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Production kWh",
+              "nativeQueryRef": "Solar kWh",
+              "displayName": "Solar kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Consumption kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Consumption kWh",
+              "nativeQueryRef": "Used kWh",
+              "displayName": "Used kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Grid Import kWh"
+                }
+              },
+              "queryRef": "Solar Telemetry.Grid Import kWh",
+              "nativeQueryRef": "Grid kWh",
+              "displayName": "Grid kWh"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Self-Sufficiency Rate"
+                }
+              },
+              "queryRef": "Solar Telemetry.Self-Sufficiency Rate",
+              "nativeQueryRef": "Self-powered",
+              "displayName": "Self-powered"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Net Grid Cost"
+                }
+              },
+              "queryRef": "Solar Telemetry.Net Grid Cost",
+              "nativeQueryRef": "Net cost",
+              "displayName": "Net cost"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Solar Telemetry"
+                    }
+                  },
+                  "Property": "Solar Savings"
+                }
+              },
+              "queryRef": "Solar Telemetry.Solar Savings",
+              "nativeQueryRef": "Savings",
+              "displayName": "Savings"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "Dates"
+                  }
+                },
+                "Property": "Year-Month"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "columnHeaders": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "grid": [
+        {
+          "properties": {
+            "gridVertical": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            },
+            "rowPadding": {
+              "expr": {
+                "Literal": {
+                  "Value": "3L"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "visualContainerObjects": {
+      "stylePreset": [
+        {
+          "properties": {
+            "name": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Minimal'"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Month by month'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "name": "Hale Joli Day",
+  "dataColors": [
+    "#EDA100",
+    "#2A78D6",
+    "#E34948",
+    "#6250D6",
+    "#1BAF7A",
+    "#EB6834",
+    "#D55181",
+    "#008300"
+  ],
+  "foreground": "#0B0B0B",
+  "foregroundNeutralSecondary": "#52514E",
+  "foregroundNeutralTertiary": "#7A7870",
+  "background": "#FFFFFF",
+  "backgroundLight": "#F8F6F1",
+  "backgroundNeutral": "#E3DFD5",
+  "tableAccent": "#EDA100",
+  "good": "#0CA30C",
+  "neutral": "#FAB219",
+  "bad": "#D03B3B",
+  "maximum": "#EDA100",
+  "center": "#F6D080",
+  "minimum": "#FFFFFF",
+  "hyperlink": "#256ABF",
+  "textClasses": {
+    "callout": {
+      "fontSize": 24,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#0B0B0B"
+    },
+    "title": {
+      "fontSize": 12,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#0B0B0B"
+    },
+    "header": {
+      "fontSize": 10,
+      "fontFace": "Segoe UI Semibold",
+      "color": "#0B0B0B"
+    },
+    "label": {
+      "fontSize": 9,
+      "fontFace": "Segoe UI",
+      "color": "#52514E"
+    }
+  },
+  "visualStyles": {
+    "*": {
+      "*": {
+        "background": [
+          {
+            "show": true,
+            "color": {
+              "solid": {
+                "color": "#FFFFFF"
+              }
+            },
+            "transparency": 0
+          }
+        ],
+        "border": [
+          {
+            "show": true,
+            "color": {
+              "solid": {
+                "color": "#E3DFD5"
+              }
+            },
+            "radius": 10,
+            "width": 1
+          }
+        ],
+        "dropShadow": [
+          {
+            "show": false
+          }
+        ],
+        "title": [
+          {
+            "show": true,
+            "fontColor": {
+              "solid": {
+                "color": "#0B0B0B"
+              }
+            },
+            "fontSize": 12,
+            "fontFamily": "Segoe UI Semibold"
+          }
+        ],
+        "subTitle": [
+          {
+            "show": true,
+            "fontColor": {
+              "solid": {
+                "color": "#7A7870"
+              }
+            },
+            "fontSize": 9,
+            "fontFamily": "Segoe UI"
+          }
+        ],
+        "padding": [
+          {
+            "top": 8,
+            "bottom": 8,
+            "left": 12,
+            "right": 12
+          }
+        ],
+        "lineStyles": [
+          {
+            "strokeWidth": 2
+          }
+        ]
+      }
+    },
+    "page": {
+      "*": {
+        "background": [
+          {
+            "color": {
+              "solid": {
+                "color": "#F5F3EE"
+              }
+            },
+            "transparency": 0
+          }
+        ],
+        "outspace": [
+          {
+            "color": {
+              "solid": {
+                "color": "#F5F3EE"
+              }
+            },
+            "transparency": 0
+          }
+        ]
+      }
+    }
+  }
+}

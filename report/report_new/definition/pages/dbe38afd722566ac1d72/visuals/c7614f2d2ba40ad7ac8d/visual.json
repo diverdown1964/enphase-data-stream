@@ -1,0 +1,212 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+  "name": "c7614f2d2ba40ad7ac8d",
+  "position": {
+    "x": 920,
+    "y": 456,
+    "z": 15000,
+    "height": 248,
+    "width": 344,
+    "tabOrder": 15000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Battery Units"
+                    }
+                  },
+                  "Property": "UnitName"
+                }
+              },
+              "queryRef": "Battery Units.UnitName",
+              "nativeQueryRef": "Unit",
+              "displayName": "Unit"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Battery Units"
+                    }
+                  },
+                  "Property": "Unit State of Charge"
+                }
+              },
+              "queryRef": "Battery Units.Unit State of Charge",
+              "nativeQueryRef": "Avg %",
+              "displayName": "Avg %"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Battery Units"
+                    }
+                  },
+                  "Property": "Unit Max Temperature"
+                }
+              },
+              "queryRef": "Battery Units.Unit Max Temperature",
+              "nativeQueryRef": "Max C",
+              "displayName": "Max C"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Battery Units"
+                    }
+                  },
+                  "Property": "Unit Peak Charge kW"
+                }
+              },
+              "queryRef": "Battery Units.Unit Peak Charge kW",
+              "nativeQueryRef": "Peak in kW",
+              "displayName": "Peak in kW"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Battery Units"
+                    }
+                  },
+                  "Property": "Unit Peak Discharge kW"
+                }
+              },
+              "queryRef": "Battery Units.Unit Peak Discharge kW",
+              "nativeQueryRef": "Peak out kW",
+              "displayName": "Peak out kW"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "Battery Units"
+                  }
+                },
+                "Property": "UnitName"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "columnHeaders": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "9L"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "grid": [
+        {
+          "properties": {
+            "gridVertical": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            },
+            "rowPadding": {
+              "expr": {
+                "Literal": {
+                  "Value": "3L"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "visualContainerObjects": {
+      "stylePreset": [
+        {
+          "properties": {
+            "name": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Minimal'"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Unit scorecard'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

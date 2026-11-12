@@ -1,0 +1,9 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
+  "version": "4.0",
+  "datasetReference": {
+    "byConnection": {
+      "connectionString": "Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/Connected Home\";initial catalog=HaleJoliSolar;integrated security=ClaimsToken;semanticmodelid=fb2409d2-2517-44b6-b7bb-7d93de96ac5b"
+    }
+  }
+}

@@ -94,6 +94,17 @@ means redeploying from the repo with `func azure functionapp publish` and re-ent
 
 Keep `SolarTelemetry` and `DimSystem`: they are the pre-November-2026 history.
 
+## Cutover moved, 2026-11-12
+
+The default cutover in `Gold_SolarTelemetryUnified()` was first pinned to the last API row
+(2026-11-11T23:45Z) and later the same day moved back to **2026-11-07T00:00Z** (2pm on 6 Nov in
+Hawaii), so the Home Assistant-only signals (peak power, battery status, stored energy, panels,
+grid status) cover five more days in the HaleJoliSolar model. The API rows for 7 to 11 Nov stay in
+`SolarTelemetry` but are no longer read. Daily production and consumption matched within rounding
+across the overlap; grid import reads about 0.4 to 1.0 kWh a day higher on the Home Assistant
+side because it is a gross flow rather than netted per interval. Where earlier sections of this
+file say 2026-11-11T23:45Z, the function's default parameter is the current truth.
+
 ## Open question
 
 The Connected Home workspace has an **Admin** principal named "Storage Account3"
