@@ -103,6 +103,28 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
         | mv-expand t to typeof(datetime), p to typeof(real)
         | project reading_time = t + bin_size, p = round(iff(p < 0, 0.0, p), 3)
     };
+    // End-of-bin value of a slowly changing numeric sensor, seeded with the latest value before
+    // the window so settings that only report on change (reserve level) are never blank.
+    let lastnum = (m: string) {
+        let obs = Silver_Solar
+            | where metric == m and isnotnull(numeric_value)
+            | where timestamp between ((start_t - 1d) .. end_t)
+            | project ts = timestamp, v = numeric_value, t = bin(timestamp, bin_size);
+        let seed = Silver_Solar
+            | where metric == m and isnotnull(numeric_value)
+            | where timestamp < (start_t - 1d)
+            | top 1 by timestamp desc
+            | project ts = timestamp, v = numeric_value, t = start_t - 1d;
+        union obs, seed
+        | summarize arg_max(ts, v) by t
+        | make-series s = max(v) default = real(null) on t from (start_t - 1d) to end_t step bin_size
+        | extend s = series_fill_forward(s)
+        | mv-expand t to typeof(datetime), s to typeof(real)
+        | project reading_time = t + bin_size, s
+    };
+    let stored  = lastnum("battery_energy_stored")  | project reading_time, battery_energy_stored_kwh = round(s, 2);
+    let reserve = lastnum("battery_reserve_level")  | project reading_time, battery_reserve_percent = s;
+    let reserve_kwh = lastnum("battery_reserve_energy") | project reading_time, battery_reserve_kwh = round(s, 2);
     let prod_peak = peak("production_power", 1.0)  | project reading_time, production_kw_peak = p;
     // consumption_power is the raw CT (house + charge - discharge); the HA template sensor
     // house_power is house load, consistent with consumption_wh.
@@ -122,6 +144,9 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
     | join kind=leftouter exp_peak on reading_time
     | join kind=leftouter dis_peak on reading_time
     | join kind=leftouter chg_peak on reading_time
+    | join kind=leftouter stored on reading_time
+    | join kind=leftouter reserve on reading_time
+    | join kind=leftouter reserve_kwh on reading_time
     | extend consumption_devices = int(null), battery_devices = battery_units
     | project system_id = toint(system_id),               // int, to match SolarTelemetry in the union
         end_at = tolong(datetime_diff("second", reading_time, datetime(1970-01-01))),
@@ -140,6 +165,7 @@ Gold_SolarIntervals(start_time: datetime = datetime(2026-11-06), end_time: datet
         production_devices, consumption_devices, battery_devices,
         production_kw_peak, consumption_kw_peak, grid_import_kw_peak, grid_export_kw_peak,
         battery_discharge_kw_peak, battery_charge_kw_peak,
+        battery_energy_stored_kwh, battery_reserve_percent, battery_reserve_kwh,
         source = "home_assistant"
     | order by reading_time asc
 }
@@ -157,6 +183,7 @@ Gold_SolarTelemetryUnified(cutover: datetime = datetime(2026-11-11T23:45:00Z)) {
         production_kw_peak = real(null), consumption_kw_peak = real(null),
         grid_import_kw_peak = real(null), grid_export_kw_peak = real(null),
         battery_discharge_kw_peak = real(null), battery_charge_kw_peak = real(null),
+        battery_energy_stored_kwh = real(null), battery_reserve_percent = real(null), battery_reserve_kwh = real(null),
         source = "enphase_api"
     | union (Gold_SolarIntervals(cutover))
     | order by reading_time asc
