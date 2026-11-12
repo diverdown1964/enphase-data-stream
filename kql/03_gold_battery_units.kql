@@ -1,0 +1,68 @@
+// Gold_BatteryUnits: one row per Encharge battery unit per 15-minute interval, from Silver_Solar.
+// Feeds the "Battery Units" table in the HaleJoliSolar semantic model. Same grain and timestamp
+// semantics as Gold_SolarIntervals (reading_time = end of interval, Pacific/Honolulu local time).
+// Per-unit sensors: charge %, power (kW, positive = discharging, same sign as the system sensor),
+// apparent power (kVA), temperature (°C), communicating. Sensors report on change, so values are
+// carried forward through bins with no report; there is no per-unit energy counter.
+
+.create-or-alter function with (folder = "Gold/Solar", docstring = "Per-Encharge-unit 15-minute intervals: state of charge, peak charge/discharge kW, apparent power, temperature, communicating")
+Gold_BatteryUnits(start_time: datetime = datetime(2026-11-06), end_time: datetime = datetime(null)) {
+    let bin_size = 15m;
+    let end_t = iff(isnull(end_time), bin(now(), bin_size), end_time);
+    let start_t = bin(start_time, bin_size);
+    let tz = "Pacific/Honolulu";
+    let units =
+        Silver_Solar
+        | where metric == "encharge_soc"
+        | summarize friendly = any(friendly_name) by device_serial
+        | extend unit_name = trim_end(@"\s+Charge$", friendly),
+                 unit_number = toint(extract(@"Battery (\d+)", 1, friendly))
+        | project device_serial, unit_name, unit_number;
+    // Numeric metric per unit per bin: end-of-bin value (or peak when sign is given), forward-filled.
+    let per_unit = (m: string, agg: string, sign: real) {
+        Silver_Solar
+        | where metric == m and isnotnull(numeric_value)
+        | where timestamp between ((start_t - 1d) .. end_t)
+        | extend v = numeric_value * sign
+        | summarize arg_max(timestamp, v), mx = max(v), mxabs = max(abs(v)) by device_serial, t = bin(timestamp, bin_size)
+        | extend pick = case(agg == "max", mx, agg == "absmax", mxabs, v)
+        | make-series s = max(pick) default = real(null) on t from (start_t - 1d) to end_t step bin_size by device_serial
+        | extend s = series_fill_forward(s)
+        | mv-expand t to typeof(datetime), s to typeof(real)
+        | project device_serial, reading_time = t + bin_size, s
+    };
+    let soc  = per_unit("encharge_soc", "end", 1.0)            | project device_serial, reading_time, soc_percent = s;
+    let dis  = per_unit("encharge_power", "max", 1.0)          | project device_serial, reading_time, discharge_kw_peak = round(iff(s < 0, 0.0, s), 3);
+    let chg  = per_unit("encharge_power", "max", -1.0)         | project device_serial, reading_time, charge_kw_peak = round(iff(s < 0, 0.0, s), 3);
+    let va   = per_unit("encharge_apparent_power", "absmax", 1.0) | project device_serial, reading_time, apparent_kva_peak = round(s, 3);
+    let temp = per_unit("encharge_temperature", "end", 1.0)    | project device_serial, reading_time, temperature_c = s;
+    // Communicating: last state per bin, forward-filled with scan (string).
+    let comm =
+        Silver_Solar
+        | where metric == "encharge_communicating" and state in ("on", "off")
+        | where timestamp between ((start_t - 30d) .. end_t)
+        | summarize arg_max(timestamp, state) by device_serial, t = bin(timestamp, bin_size)
+        | project device_serial, t = iff(t < start_t - 1d, start_t - 1d, t), s = state
+        | summarize s = any(s) by device_serial, t
+        | join kind=rightouter (units | project device_serial | extend dummy = 1
+                                | join kind=inner (range t from (start_t - 1d) to end_t step bin_size | extend dummy = 1) on dummy
+                                | project device_serial, t) on device_serial, t
+        | project device_serial = device_serial1, t = t1, s = coalesce(s, "")
+        | order by device_serial asc, t asc
+        | scan declare (filled: string = "") with (step x: true => filled = iff(isempty(s), iff(x.device_serial == device_serial, x.filled, ""), s);)
+        | project device_serial, reading_time = t + bin_size, communicating = iff(filled == "on", "Yes", iff(filled == "off", "No", ""));
+    soc
+    | where reading_time > start_t
+    | join kind=leftouter dis  on device_serial, reading_time
+    | join kind=leftouter chg  on device_serial, reading_time
+    | join kind=leftouter va   on device_serial, reading_time
+    | join kind=leftouter temp on device_serial, reading_time
+    | join kind=leftouter comm on device_serial, reading_time
+    | join kind=inner units on device_serial
+    | project unit_serial = device_serial, unit_name, unit_number,
+        reading_time,
+        reading_time_local = datetime_utc_to_local(reading_time, tz),
+        soc_percent, discharge_kw_peak, charge_kw_peak, apparent_kva_peak, temperature_c,
+        communicating = coalesce(communicating, "")
+    | order by reading_time asc, unit_number asc
+}
